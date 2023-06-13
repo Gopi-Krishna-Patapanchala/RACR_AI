@@ -78,3 +78,9 @@ The performance tracking, reporting, and data visualization functionality of the
 4. A `Performance` class will manage data retrieval and report generation, allowing users to export data in .csv, .xlsx, JSON, or pickled DataFrame / ndarray format.
 5. This processed data will be perfect for creating visualizations, but this will likely be implemented in a separate class/component.
 
+#### Persistent data, state, and the `ConfigManager` Class
+Because `ConfigManager` is used throughout the API by each component, it will be explained in its own subsection. This class is implemented as a singleton, meaning only one global instance of the class can be instantiated by the API. It is essentially responsible for managing state information for the whole API by frequently reading from and writing to JSON config files stored in the "Configs" directory.
+
+When a user adds a new device, sets up a new network configuration, or creates a new experiment, all the data necessary to invoke the same device, network, or experiment later on must be saved to the disk in a format that can be easily parsed next time the user starts the sytem up again. These are the sorts of operations `ConfigManager` is used for. It has a compositional relationship with a number of classes that inherit from the `AbstractConfigSection` class (as of right now, there are only two - `NetworkingConfigSection` and `PreferencesConfigSection` - but there will be another subclass for handling saved experiment data).
+
+In the spirit of trying to stick to best SWE practices, `ConfigManager` does not instantiate device objects, network objects, or the likes, but it does provide methods for getting and setting the serialized object data that is stored in the config JSON files. This way, it can be used to load previously saved instances without actually implementing any of their functionality.
