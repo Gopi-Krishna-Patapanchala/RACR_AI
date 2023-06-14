@@ -37,6 +37,9 @@ To run an experiment, the system will first use Docker to load a **base image** 
 Because everything needed to run each experiment is containerized and stored in its own directory, replicating experiments on new systems should be straightforward. Experiment results, including both prediction data and performance metrics, are stored in a log file that can be parsed to generate reports and data visualizations. It would likely be worthwhile to structure these subdirectories within "TestCases" in a way that allows users to easily share experiments with other users.
 
 ### API Component Structure
+
+![The API Component Structure](testbed_outline.png)
+
 Like previously mentioned, the API serves as a "back end" that is fully decoupled from the user interface itself. It can be though of in terms of its three main functions: networking, experiment setup, and performance tracking / reporting.
 
 #### Networking
