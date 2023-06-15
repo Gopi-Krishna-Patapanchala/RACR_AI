@@ -1,10 +1,8 @@
 import socket
-from getmac import get_mac_address
-from scapy.all import ARP, Ether, srp
-import os
+import ipaddress
 import platform
 import netifaces as ni
-import uuid
+from getmac import get_mac_address
 
 
 class Device:
@@ -30,6 +28,10 @@ class Device:
 
     def __init__(self, ip_address):
         self.ip_address = ip_address
+        self.mac_address = None
+        self.hostname = None
+        self.username = None
+
         self.mac_address = self.get_mac_address()
         self.hostname = self.get_hostname()
 
@@ -99,10 +101,7 @@ class Controller(Device):
 
         self.hostname = socket.gethostname()
         self.ip_address = ni.ifaddresses(self.net_interface)[ni.AF_INET][0]['addr']
-        if os.name == 'posix':
-            self.mac_address = ni.ifaddresses(self.net_interface)[ni.AF_LINK][0]['addr']
-        elif os.name == 'nt':
-            self.mac_address = get_mac_address(interface=self.net_interface)
+        self.mac_address = get_mac_address(interface=self.net_interface)
 
 
 class LAN:
@@ -122,24 +121,46 @@ class LAN:
         Discovers devices on the LAN and adds them to the devices list.
     """
 
-    def __init__(self):
+    def __init__(self, controller=None):
         """Constructs all the necessary attributes for the LAN object."""
         self.devices = []
+        if controller:
+            self.controller = controller
+        else:
+            self.controller = Controller()
 
-    def discover_devices(self, ip_range):
+    def discover_devices(self, cidr_block, port=22, ttl=0.1):
         """
-        Discover devices on the LAN within the given IP range.
+        Discover devices on the LAN within the given IP range by attempting to 
+        establish a socket connection (on port 22 by default).
+
+        TODO: This should really use threading.
 
         Parameters:
-            ip_range (str): The range of IPs to scan in CIDR format
+        -----------
+        cidr_block (str) : The range of IPs to scan in CIDR format
             (e.g., "192.168.1.0/24").
+        ttl (float) : Time To Live; how long to wait for a socket connection
+            before moving on
+        port (int) : Which port to attempt socket connections through
         """
-        for ip in ipaddress.IPv4Network(ip_range):
+        ip_range = ipaddress.ip_network(cidr_block).hosts()
+        responsive_hosts = []
+        
+        for host in ip_range:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(ttl)
             try:
-                device = Device(str(ip))
-                self.devices.append(device)
-            except Exception as e:
-                print(f"An error occurred while adding a device: {e}")
+                s.connect((str(host), port))
+                responsive_hosts.append(str(host))
+            except (socket.timeout, ConnectionRefusedError):
+                pass
+            finally:
+                s.close()
+  
+        self.devices = [Device(ip) for ip in responsive_hosts]
+        return
+
 
     def display_devices(self):
         """
