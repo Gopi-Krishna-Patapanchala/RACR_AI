@@ -284,7 +284,3 @@ class PreferencesSection(AbstractConfigSection):
 
 
 
-
-
-
-
