@@ -1,0 +1,13 @@
+# experiment-specific toml files provide important information about setting up
+# test case parameters and how to run devices together
+
+[global]
+# configurations to this section will apply to all container types in this experiment,
+# but will be overridden by any conflicting configs in type-specific sections
+test_output = "/home/stevepic95/Source/AVResearch/RACR_AI/TestCases/OriginalAlexnetSplitInference/test_results/"
+experiment_root = "/home/stevepic95/Source/AVResearch/RACR_AI/TestCases/OriginalAlexnetSplitInference/"
+
+[client]
+
+[remote]
+

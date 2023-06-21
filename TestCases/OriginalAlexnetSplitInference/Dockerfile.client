@@ -1,5 +1,6 @@
-# using base image previously saved as .tar
-FROM no-cuda-client-base AS base
+# ARG before FROM to select appropriate base image depending on host machine
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} as base
 
 # arguments passed during the docker run command
 ARG HOST_IP
@@ -9,12 +10,15 @@ ARG PORT
 WORKDIR /usr/src/app
 
 # install any new packages required on top of what's included in base
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install seaborn thop
-EXPOSE 3000
+# (there are no extra packages required for this experiment)
 
-COPY . .
+# Copy over experiment code and create the output directory
+COPY ./src/ .
+COPY ./test/ .
+COPY ./*.py .
+COPY ./*.sh .
+
+RUN mkdir test_results
 
 # execute the default script with arguments
 FROM base AS client
