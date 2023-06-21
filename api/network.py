@@ -1,10 +1,8 @@
 import socket
 from getmac import get_mac_address
-from scapy.all import ARP, Ether, srp
 import os
 import platform
 import netifaces as ni
-import uuid
 
 
 class Device:
@@ -36,7 +34,7 @@ class Device:
     def get_mac_address(self):
         """Uses getmac to attempt to find MAC, memoizes if successful"""
         if self.mac_address:
-            return self.mac_address    # if already memoized 
+            return self.mac_address  # if already memoized
         try:
             return get_mac_address(ip=self.ip_address)
         except Exception as e:
@@ -46,7 +44,7 @@ class Device:
     def get_hostname(self):
         """Uses socket to attempt to find hostname, memoizes if successful"""
         if self.hostname:
-            return self.hostname    # if already memoized 
+            return self.hostname  # if already memoized
         try:
             return socket.gethostbyaddr(self.ip_address)[0]
         except Exception as e:
@@ -79,7 +77,7 @@ class Controller(Device):
     ip_address (string) : the local IP address of the device
     mac_address (string) : the MAC address of the device
     hostname (string) : the hostname of the device
-    
+
     Methods
     -------
     get_mac_address : gets MAC
@@ -98,10 +96,10 @@ class Controller(Device):
             self.net_interface = interface_list[0]
 
         self.hostname = socket.gethostname()
-        self.ip_address = ni.ifaddresses(self.net_interface)[ni.AF_INET][0]['addr']
-        if os.name == 'posix':
-            self.mac_address = ni.ifaddresses(self.net_interface)[ni.AF_LINK][0]['addr']
-        elif os.name == 'nt':
+        self.ip_address = ni.ifaddresses(self.net_interface)[ni.AF_INET][0]["addr"]
+        if os.name == "posix":
+            self.mac_address = ni.ifaddresses(self.net_interface)[ni.AF_LINK][0]["addr"]
+        elif os.name == "nt":
             self.mac_address = get_mac_address(interface=self.net_interface)
 
 
@@ -147,5 +145,3 @@ class LAN:
         """
         for device in self.devices:
             print(f"IP Address: {device.ip_address}, Hostname: {device.hostname}")
-
-
