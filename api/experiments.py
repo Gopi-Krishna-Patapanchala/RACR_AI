@@ -23,5 +23,3 @@ class Experiment:
         testcase_dir = project_root / EXPERIMENT_DIR_NAME
         new_exp_dir = testcase_dir / experiment_name
         new_exp_dir.mkdir()
-
-        for 

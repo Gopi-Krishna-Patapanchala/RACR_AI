@@ -1,4 +1,0 @@
-# the default config file used for new experiments. Uses toml format
-# for easy manual or automatic edits/updates
-
-output_directory = "Output"
