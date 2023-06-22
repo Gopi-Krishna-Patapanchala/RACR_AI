@@ -1,0 +1,5 @@
+# This config file contains info the controller will use to interact
+# with devices during experiments. It will be placed in ~/.config/tracr
+# when the setup script is run on the device.
+
+racr_repo_root_path = "~/RACR_AI/"

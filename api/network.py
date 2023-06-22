@@ -3,10 +3,11 @@ import pathlib
 import paramiko
 import ipaddress
 import platform
+import docker
 import netifaces as ni
 from getmac import get_mac_address
 
-from api.exceptions import (
+from exceptions import (
     MissingDeviceDataException,
     NoIPFoundException,
     NoMACFoundException,
@@ -74,22 +75,25 @@ class Device:
         finally:
             s.close()
 
-    def get_ip_address(self):
+    def get_ip_address(self, refresh=False):
         """Attempts to get the current IP address however possible"""
-        if self.hostname:
-            try:
-                return socket.gethostbyname(self.hostname)
-            except socket.gaierror:
-                pass
-        if self.mac_address:
-            neighbors = LAN.get_responsive_hosts()
-            for ip in neighbors:
-                if get_mac_address(ip=ip) == self.mac_address:
-                    return ip
-            search_param = f"MAC Address = {self.mac_address}"
-            raise NoIPFoundException(search_param)
+        if refresh or not self.ip_address:
+            if self.hostname:
+                try:
+                    return socket.gethostbyname(self.hostname)
+                except socket.gaierror:
+                    pass
+            if self.mac_address:
+                neighbors = LAN.get_responsive_hosts()
+                for ip in neighbors:
+                    if get_mac_address(ip=ip) == self.mac_address:
+                        return ip
+                search_param = f"MAC Address = {self.mac_address}"
+                raise NoIPFoundException(search_param)
+            else:
+                raise MissingDeviceDataException("hostname or mac_addr", "IP Address")
         else:
-            raise MissingDeviceDataException("hostname or mac_address", "IP Address")
+            return self.ip_address
 
     def get_mac_address(self):
         """Uses getmac to attempt to find MAC, memoizes if successful"""
@@ -209,8 +213,10 @@ class Device:
             self.set_local_hostname(info["hostname"])
         return info
 
-    def is_setup(self):
+    def ready_to_deploy(self):
         """Returns True if the device is ready to be deployed to"""
+        is_listening = self.is_responsive()
+
         # TODO:
         # Check for repo matching the controller device
         # Check for ability to ssh
