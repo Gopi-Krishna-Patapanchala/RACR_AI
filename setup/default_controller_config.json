@@ -1,0 +1,21 @@
+{
+    "controller": {
+        "uuid": "",
+        "device_nickname": "",
+        "primary_user": "",
+        "os_family": "",
+        "cpu_architecture": ""
+    },
+    "preferences": {
+        "verbosity": 0
+    },
+    "known_devices": [
+         {
+            "uuid": "",
+            "device_nickname": "",
+            "primary_user": "",
+            "os_family": "",
+            "cpu_architecture": ""
+        }
+    ]
+}
