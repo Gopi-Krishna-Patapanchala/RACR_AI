@@ -10,11 +10,17 @@ the word "python".
 """
 
 import argparse
+import socket
+import sys
+from rich.console import Console
+from rich.table import Table
+from getmac import get_mac_address
 from pathlib import Path
+from collections import defaultdict
 
-import api.network
-import api.experiments
-from api.config_mgr import Configs
+import api.experiments as experiments
+from api.config_mgr import Configs, ControllerConfigs
+from api.network import LAN, Device
 
 
 # path to this file's location
@@ -22,6 +28,17 @@ project_root = Path(__file__).parent.absolute()
 
 # path to console text files
 textfiles = project_root / "setup" / "console_text"
+
+# initialize the config manager
+try:
+    configs = Configs(controller_config=ControllerConfigs())
+except FileNotFoundError:
+    print(
+        "This machine hasn't been set up as a controller yet.",
+        "Run 'tracr setup --help' for setup commands.",
+        sep="\n",
+    )
+    sys.exit(1)
 
 
 # trivial function to be concise
@@ -37,33 +54,141 @@ def get_text(textfile: Path) -> str:
 
 
 def device_ls(args):
-    # initialize the config manager
-    try:
-        configs = Configs()
-    except FileNotFoundError:
-        print(
-            "This machine hasn't been set up as a controller yet. Run 'tracr setup' to begin."
-        )
-
-    def get_known():
-        devices = configs.get_known_devices()
-
     # explicitly set the flags to False if they are not set
     known = bool(args.known)
     unknown = bool(args.unknown)
     listening = bool(args.listening)
     ready = bool(args.ready)
 
-    # if for some reason -ku or -lu is set, the correct output is none
+    # if for some reason -ku or -ru is set, the correct output is none
     want_none = (known and unknown) or (ready and unknown)
     if want_none:
         print("No devices matching criteria")
         return
 
+    def tag_status(devlist: list, tag: str) -> list:
+        """A little helper function for adding a tag to each device in a list"""
+        for dev in devlist:
+            dev["status"] = tag
+
     # if no flags are set, then all devices should be shown
     want_all = not (known or unknown or listening or ready)
-    if want_all:
-        print("ALL DEVICES:")
+
+    # if -k or -u is set, we will need a list of known devices
+    if known or unknown or want_all:
+        known_devices = configs.controller.get_known_devices()
+        tag_status(known_devices, "known")
+
+    # if -u, -r, or -l is set, we will need to know which devices are responsive
+    if unknown or listening or ready or want_all:
+        responsive_device_ips = LAN().get_responsive_hosts()
+        listening_devices = [Device().fetch_data(ip=ip) for ip in responsive_device_ips]
+        tag_status(listening_devices, "listening")
+        # if -u is set, we will need a list of listening devices that are not known
+        if unknown or want_all:
+            known_macs = [device.get("mac_address") for device in known_devices]
+            unknown_devices = [
+                device
+                for device in listening_devices
+                if device.get("mac_address") not in known_macs
+            ]
+            tag_status(unknown_devices, "unknown")
+
+    # if -r is set, we will need to see which of the listening devices are ready
+    if ready or want_all:
+        ready_devices = [dev for dev in listening_devices if Device().is_ready(dev)]
+        tag_status(ready_devices, "ready")
+
+    k = known_devices or None
+    u = unknown_devices or None
+    l = listening_devices or None
+    r = ready_devices or None
+
+    dev_groups = [group for group in (k, u, l, r) if group is not None]
+
+    def merge_dicts(*args, unique=None, combine=None):
+        # Combine all the list-of-dicts into a single list-of-dicts
+        merged = [item for sublist in args for item in sublist]
+
+        # Find the union of all the keys
+        all_keys = set().union(*[d.keys() for d in merged])
+
+        # Add missing keys with an empty string value
+        for d in merged:
+            for key in all_keys:
+                d.setdefault(key, "")
+
+        # combine dicts describing the same device
+        if unique:
+            cleaned_list = []
+            unique_vals = set([d[unique] for d in merged])
+            for val in unique_vals:
+                dicts_with_val = [d for d in merged if d[unique] == val]
+                if len(dicts_with_val) > 1:
+                    combo_dict = {}
+                    for key in all_keys:
+                        all_vals = list(
+                            set([d[key] for d in dicts_with_val if d[key] != ""])
+                        )
+                        if combine and key == combine:
+                            combo_dict[key] = ", ".join(sorted(all_vals))
+                        else:
+                            # TODO: throw an error if there are multiple values for a non-combine key
+                            combo_dict[key] = ", ".join(sorted(all_vals))
+                    cleaned_list.append(combo_dict)
+                else:
+                    cleaned_list.append(dicts_with_val[0])
+
+        return cleaned_list, list(all_keys)
+
+    device_list, fields = merge_dicts(*dev_groups, unique="mac_address", combine="tag")
+
+    def custom_sort_key(item):
+        """A custom sort key for the table, so that the columns are in a somewhat specific order"""
+        mapping = {
+            "mac_address": 0,
+            "status": 1,
+            "nickname": 2,
+            "last_ip": 3,
+            "static_ip": 4,
+        }
+        if item in mapping:
+            return (mapping[item],)
+        else:
+            # if it's not one of the special ones, use 5 as base for alphabetical order
+            return 5, item
+
+    fields = sorted(fields, key=custom_sort_key)
+    rows = [[device.get(field) for field in fields] for device in device_list]
+
+    table = Table(
+        title=f"{len(device_list)} DEVICE{'S' if len(device_list) > 1 else ''} FOUND"
+    )
+
+    for field in fields:
+        # justify, style, no_wrap
+        j, s, nw = "left", "white", True
+        if "mac" in field or "ip" in field:
+            j = "center"
+        if "status" in field:
+            s = "cyan"
+        if "description" in field:
+            nw = False
+        table.add_column(field, justify=j, style=s, no_wrap=nw)
+
+    for row in rows:
+        table.add_row(*row)
+
+    console = Console()
+    console.print(table)
+    return
+
+
+def device_refresh(args):
+    """
+    Updates known device information in the config file using the current network state
+    """
+    known_devices = configs.controller.get_known_devices()
 
 
 def device_add(args):
@@ -81,6 +206,21 @@ def device_add(args):
         pass
     if args.description:
         pass
+
+
+def setup_controller(args):
+    # TODO: define setup controller function
+    pass
+
+
+def setup_device(args):
+    # TODO: define setup device function
+    pass
+
+
+def setup_experiment(args):
+    # TODO: define setup experiment function
+    pass
 
 
 def network(args):
@@ -257,9 +397,24 @@ def main():
 
     # Parser for 'setup'
     parser_setup = subparsers.add_parser("setup", help="Submodule for initial setup")
-    parser_setup.add_argument("-d")
-    parser_setup.add_argument("-e")
-    parser_setup.set_defaults(func=setup)
+
+    # Add sub-sub parsers for the setup module
+    setup_subparsers = parser_setup.add_subparsers(title="SETUP MODULE COMMANDS")
+    parser_setup_controller = setup_subparsers.add_parser(
+        "controller", help="Set up the controller"
+    )
+    # TODO: add arguments for controller setup
+    parser_setup_controller.set_defaults(func=setup_controller)
+
+    parser_setup_device = setup_subparsers.add_parser("device", help="Set up a device")
+    # TODO: add arguments for device setup
+    parser_setup_device.set_defaults(func=setup_device)
+
+    parser_setup_experiment = setup_subparsers.add_parser(
+        "experiment", help="Set up an experiment"
+    )
+    # TODO: add arguments for experiment setup
+    parser_setup_experiment.set_defaults(func=setup_experiment)
 
     args = parser.parse_args()
     if "func" in args:

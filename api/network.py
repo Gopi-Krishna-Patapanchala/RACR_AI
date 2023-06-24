@@ -1,4 +1,6 @@
 import socket
+import time
+import re
 import pathlib
 import paramiko
 import ipaddress
@@ -12,6 +14,40 @@ from api.exceptions import (
     NoIPFoundException,
     NoMACFoundException,
 )
+
+
+def mac_doublecheck(host, repeat, wait):
+    """
+    mac_doublecheck
+        Sends multiple UDP packets to boost the success rate of get_mac_address() function.
+    Parameters:
+    -----------
+    host: str
+        The IP address or hostname of the target device.
+    repeat: int
+        The number of times to send a UDP packet to the target device.
+    wait: float
+        The number of seconds to wait between sending UDP packets.
+    Returns:
+    --------
+    str or None
+        The MAC address of the target device if found, None otherwise.
+    """
+    # check if host matches IP address pattern
+    is_ip = re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host)
+
+    macs = []
+    for i in range(repeat):
+        if is_ip:
+            macs.append(get_mac_address(ip=host))
+        else:
+            macs.append(get_mac_address(hostname=host))
+        time.sleep(wait)
+    macs = list(set(macs))
+    for m in macs:
+        if bool(m) and not m == "00:00:00:00:00:00":
+            return m
+    return None
 
 
 class Device:
@@ -41,30 +77,83 @@ class Device:
 
     def __init__(
         self,
-        ip_address: str = "",
-        ip_is_static: str = "",
+        last_ip: str = "",
+        static_ip: str = "",
         mac_address: str = "",
         hostname: str = "",
         ssh_username: str = "",
-        nickname: str = "",
+        device_nickname: str = "",
         description: str = "",
         os_family: str = "",
-        cpu_arch: str = "",
+        cpu_architecture: str = "",
         ram_MB: str = "",
+        infer_missing: bool = False,
     ):
-        self.ip_address = ip_address
-        self.ip_is_static = ip_is_static
+        """
+        Initializes a Device object from a given device information.
+
+        Parameters
+        ----------
+        last_ip : str, optional
+            The last known IP address of the device, by default ""
+        static_ip : str, optional
+            The static IP address of the device, by default ""
+        mac_address : str, optional
+            The MAC address of the device, by default ""
+        hostname : str, optional
+            The hostname of the device, by default ""
+        ssh_username : str, optional
+            The username to use when SSHing into the device, by default ""
+        device_nickname : str, optional
+            A nickname for the device, by default ""
+        description : str, optional
+            A description of the device, by default ""
+        os_family : str, optional
+            The operating system family of the device, by default ""
+        cpu_architecture : str, optional
+            The CPU architecture of the device, by default ""
+        ram_MB : str, optional
+            The amount of RAM on the device, in MB, by default ""
+        infer_missing : bool, optional
+            Whether to infer missing device information during initialization, by default False
+        """
+        self.last_ip = last_ip
+        self.static_ip = static_ip
         self.mac_address = mac_address
         self.hostname = hostname
         self.ssh_username = ssh_username
-        self.nickname = nickname
+        self.device_nickname = device_nickname
         self.description = description
         self.os_family = os_family
-        self.cpu_arch = cpu_arch
+        self.cpu_architecture = cpu_architecture
         self.ram_MB = ram_MB
+
+        if infer_missing:
+            self.infer_missing()
+
+    @classmethod
+    def create_from_dict(cls, device_info: dict, infer_missing=False):
+        device_instance = Device(**device_info)
 
     @classmethod
     def is_listening(cls, host, port=22, ttl=0.1):
+        """
+        Checks if a socket is listening on the given host and port.
+
+        Parameters:
+        -----------
+        host: str
+            The IP address or hostname of the target machine.
+        port: int, optional
+            The port number to check, by default 22.
+        ttl: float, optional
+            The maximum time to wait for a response, in seconds, by default 0.1.
+
+        Returns:
+        --------
+        bool
+            True if a socket is listening on the given host and port, False otherwise.
+        """
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(ttl)
         try:
@@ -75,9 +164,121 @@ class Device:
         finally:
             s.close()
 
-    def get_ip_address(self, refresh=False):
+    @classmethod
+    def is_ready(cls, device):
+        """
+        Checks if a device is ready to accept an experiment.
+
+        Parameters:
+        -----------
+        device: Device
+            The target device.
+
+        Returns:
+        --------
+        bool
+            True if the device is ready, False otherwise.
+        """
+        # TODO: implement this
+        return False
+
+    @classmethod
+    def get_ip_from_mac(cls, mac, cidr_block="192.168.1.0/24", repeat=3, wait=0.01):
+        """
+        Gets the IP address of a device with the given MAC address.
+
+        Parameters:
+        -----------
+        cls: class
+            The class object.
+        mac: str
+            The MAC address of the target device.
+        cidr_block: str, optional
+            The CIDR block to scan for the target device's IP address, by default "192.168.1.0/24".
+        repeat: int, optional
+            The number of times to send a UDP packet to the target device, by default 3.
+        wait: float, optional
+            The number of seconds to wait between sending UDP packets, by default 0.01.
+
+        Raises:
+        -------
+        NoIPFoundException
+            If the IP address of the device with the given MAC address cannot be found.
+
+        Returns:
+        --------
+        str
+            The IP address of the device with the given MAC address.
+        """
+        possible_ips = [str(ip) for ip in ipaddress.ip_network(cidr_block).hosts()]
+
+        ip_mac_pairs = [(ip, mac_doublecheck(ip, repeat, wait)) for ip in possible_ips]
+        for ip, m in ip_mac_pairs:
+            if m == mac:
+                return ip
+
+        raise NoIPFoundException(f"MAC Address = {mac}")
+
+    @classmethod
+    def fetch_data(
+        cls, ip=None, mac=None, hostname=None, repeat=3, wait=0.01, recurse=1
+    ):
+        """Fetches data from an unknown device, given any one of its identifiers"""
+
+        data = {"last_ip": ip, "mac_address": mac, "hostname": hostname}
+
+        if not data.get("last_ip"):
+            if data.get("hostname"):
+                try:
+                    data["last_ip"] = socket.gethostbyname(data["hostname"])
+                except socket.gaierror:
+                    pass
+            if data.get("mac_address") and not data.get("last_ip"):
+                try:
+                    data["last_ip"] = cls.get_ip_from_mac(data["mac_address"])
+                except NoIPFoundException:
+                    pass
+        if not data.get("mac_address"):
+            if data.get("hostname"):
+                data["mac_address"] = mac_doublecheck(
+                    data["hostname"], repeat=repeat, wait=wait
+                )
+            if data.get("last_ip") and not data.get("mac_address"):
+                data["mac_address"] = mac_doublecheck(
+                    data["last_ip"], repeat=repeat, wait=wait
+                )
+        if not data.get("hostname"):
+            if data.get("last_ip"):
+                try:
+                    data["hostname"] = socket.gethostbyaddr(data["last_ip"])[0]
+                except socket.herror:
+                    pass
+
+        if recurse > 0 and not all(data.values()):
+            return cls.fetch_data(**data, recurse=recurse - 1)
+        else:
+            return data
+
+    def infer_missing(self):
+        """
+        Attempts to infer missing device information using whatever information
+        is available.
+        """
+        # find hostname and IP first
+        if not self.last_ip:
+            try:
+                self.get_current_ip(refresh=True)
+            except (NoIPFoundException, MissingDeviceDataException):
+                pass
+        if self.last_ip and not self.hostname:
+            try:
+                self.hostname = socket.gethostbyaddr(self.last_ip)[0]
+            except socket.herror:
+                pass
+
+    def get_current_ip(self, refresh=False):
         """Attempts to get the current IP address however possible"""
-        if refresh or not self.ip_address:
+        if refresh or not self.last_ip:
             if self.hostname:
                 try:
                     return socket.gethostbyname(self.hostname)
@@ -93,7 +294,7 @@ class Device:
             else:
                 raise MissingDeviceDataException("hostname or mac_addr", "IP Address")
         else:
-            return self.ip_address
+            return self.last_ip
 
     def get_mac_address(self):
         """Uses getmac to attempt to find MAC, memoizes if successful"""
@@ -103,21 +304,21 @@ class Device:
             result = get_mac_address(hostname=self.hostname)
             if result:
                 return result
-        if self.ip_address:
-            result = get_mac_address(ip=self.ip_address)
+        if self.last_ip:
+            result = get_mac_address(ip=self.last_ip)
             if result:
                 return result
-        raise NoMACFoundException(f"Hostname: {self.hostname}, IP: {self.ip_address}")
+        raise NoMACFoundException(f"Hostname: {self.hostname}, IP: {self.last_ip}")
 
     def get_hostname(self, silent=False):
         """Uses socket to attempt to find hostname, memoizes if successful"""
         if self.hostname:
             return self.hostname  # if already memoized
         try:
-            return socket.gethostbyaddr(self.ip_address)[0]
+            return socket.gethostbyaddr(self.last_ip)[0]
         except Exception as e:
             if not silent:
-                print(f"No hostname found for {self.ip_address} : {e}")
+                print(f"No hostname found for {self.last_ip} : {e}")
             return None
 
     def set_up_passwordless_ssh(self):
@@ -130,7 +331,7 @@ class Device:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(ttl)
         try:
-            s.connect((self.get_ip_address(), port))
+            s.connect((self.get_current_ip(), port))
         except (socket.timeout, ConnectionRefusedError):
             return False
         finally:
@@ -183,7 +384,7 @@ class Device:
 
         # Connect to the server using the private key
         client.connect(
-            self.get_ip_address(), username=self.get_username(), pkey=private_key
+            self.get_current_ip(), username=self.get_username(), pkey=private_key
         )
 
         # Dict to store the information
@@ -291,6 +492,46 @@ class LAN:
         ips = ipaddress.ip_network(cidr_block).hosts()
         return [str(ip) for ip in ips if Device.is_listening(ip, port=port, ttl=ttl)]
 
+    @classmethod
+    def find_all_devices(cls, cidr_block="192.168.1.0/24", tenacity=3):
+        """
+        Searches the local network for all devices, even if they are not open to
+        socket connections.
+
+        Parameters:
+        -----------
+        cidr_block (str) : The range of IPs to scan in CIDR format
+        tenacity (int) : An arbitrary rating of 1 to 5 for how much time should
+            be spent trying to find devices. 1 is the lowest. (default: 3)
+
+        Returns:
+        --------
+        device_list (list[dict]) : A list of dictionaries containing the ip, mac,
+            and hostname of each device found
+        """
+        # translate tenacity to actual parameters
+        tenacity = int(tenacity)
+        if tenacity < 1:
+            tenacity = 1
+        elif tenacity > 5:
+            tenacity = 5
+        repeats = tenacity
+        wait_time = 0.005 * 3**tenacity
+        recurse = tenacity - 1
+
+        ips = [str(ip) for ip in ipaddress.ip_network(cidr_block).hosts()]
+        ip_mac_tuples = [
+            (ip, mac_doublecheck(ip, repeat=repeats, wait=wait_time)) for ip in ips
+        ]
+        ip_mac_tuples = [tup for tup in ip_mac_tuples if tup[1]]
+        found_devs = [
+            Device().fetch_data(
+                ip=ip, mac=mac, repeat=repeats, wait=wait_time, recurse=recurse
+            )
+            for ip, mac in ip_mac_tuples
+        ]
+        return found_devs
+
     def discover_devices(self, cidr_block, port=22, ttl=0.1):
         """
         Discover devices on the LAN within the given IP range by attempting to
@@ -310,7 +551,7 @@ class LAN:
         responsive_hosts = []
 
         for host in ip_range:
-            if is_listening(host, port=port, ttl=ttl):
+            if Device().is_listening(host, port=port, ttl=ttl):
                 responsive_hosts.append(host)
 
         self.devices = [Device(session_ip=str(host)) for host in responsive_hosts]
@@ -321,7 +562,7 @@ class LAN:
         Display the IP addresses and hostnames of all the devices in the LAN.
         """
         for i, device in enumerate(self.devices):
-            ip = device.get_ip_address()
+            ip = device.get_current_ip()
             hname = device.get_hostname(silent=True)
             if not hname:
                 hname = "No DNS record found."
