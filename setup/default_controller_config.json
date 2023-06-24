@@ -13,6 +13,9 @@
          {
             "mac_address": "",
             "ssh_username": "",
+            "ssh_pw": "",
+            "ssh_pubkey_fp": "",
+            "ssh_privkey_fp": "",
             "device_nickname": "",
             "description": "",
             "hostname": "",

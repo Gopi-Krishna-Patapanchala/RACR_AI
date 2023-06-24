@@ -36,3 +36,27 @@ class NoMACFoundException(Exception):
     def __init__(self, search_param):
         self.message = f"Could not find MAC address for device matching {search_param}"
         super().__init__(self.message)
+
+
+class SSHNotReadyException(Exception):
+    """
+    An exception raised when an SSH operation is attempted on a device that is
+    not ready for SSH.
+    """
+
+    def __init__(self, failed_operation, device):
+        self.message = f"Could not connect to {device} via SSH to {failed_operation}"
+        super().__init__(self.message)
+
+
+class NoDeviceConfigException(Exception):
+    """
+    An exception raised when an operation attempts to retrive information from a
+    device config file that does not exist.
+    """
+
+    def __init__(self, failed_operation, device):
+        self.message = (
+            f"{device} has no config file. Could not execute {failed_operation}"
+        )
+        super().__init__(self.message)

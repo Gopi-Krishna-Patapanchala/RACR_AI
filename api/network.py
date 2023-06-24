@@ -8,13 +8,22 @@ import platform
 import docker
 import netifaces as ni
 from getmac import get_mac_address
+from pathlib import Path
 
 from api.exceptions import (
     MissingDeviceDataException,
     NoIPFoundException,
     NoMACFoundException,
+    SSHNotReadyException,
+    NoDeviceConfigException
 )
 
+
+# Global constants
+
+
+
+# Global utility functions
 
 def mac_doublecheck(host, repeat, wait):
     """
@@ -108,6 +117,9 @@ class Device:
         mac_address: str = "",
         hostname: str = "",
         ssh_username: str = "",
+        ssh_pw: str = "",
+        ssh_pubkey_fp: Path = "",
+        ssh_privkey_fp: Path = "",
         device_nickname: str = "",
         description: str = "",
         os_family: str = "",
@@ -130,6 +142,12 @@ class Device:
             The hostname of the device, by default ""
         ssh_username : str, optional
             The username to use when SSHing into the device, by default ""
+        ssh_pw : str, optional
+            The password to use when SSHing into the device
+        ssh_pubkey_fp: Path, optional
+            The path to the local SSH public key for this device
+        ssh_privkey_fp: Path, optional
+            The path to the local SSH private key for this device
         device_nickname : str, optional
             A nickname for the device, by default ""
         description : str, optional
@@ -148,6 +166,9 @@ class Device:
         self.mac_address = mac_address
         self.hostname = hostname
         self.ssh_username = ssh_username
+        self.ssh_pw = ssh_pw
+        self.ssh_pubkey_fp = ssh_pubkey_fp
+        self.ssh_privkey_fp = ssh_privkey_fp
         self.device_nickname = device_nickname
         self.description = description
         self.os_family = os_family
@@ -305,8 +326,49 @@ class Device:
             except NoMACFoundException:
                 pass
 
-        # TODO: finish this
-        # Using what we have now, attempt to find the rest
+        # if we can establish an SSH connection to the device, we can get
+        # more information
+        if self.ready_for_SSH():
+
+
+    def ready_for_SSH(self, debug=False):
+        """
+        Returns True if the device is not only listening on port 22, but
+        also accepting connections using the parameters saved as attributes.
+
+        Parameters:
+        -----------
+        debug: bool, optional
+            If True, print any exceptions that occur during the SSH connection
+        """
+        # immediately return False if we don't have enough information
+        if not all(
+            (
+                (self.last_ip or self.hostname or self.static_ip),
+                self.ssh_username,
+                self.ssh_privkey_fp,
+            )
+        ):
+            return False
+
+        # check if the device is listening on port 22
+        if not self.is_responsive():
+            return False
+
+        # finally, check if we can connect using the stored credentials
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        rsa_key = paramiko.RSAKey(filename=self.ssh_privkey_fp)
+
+        try:
+            client.connect(self.last_ip, username=self.ssh_username, pkey=rsa_key)
+        except Exception as e:
+            if debug:
+                print(e)
+            return False
+
+        client.close()
+        return True
 
     def get_current_ip(self, refresh=False):
         """Attempts to get the current IP address however possible"""
@@ -395,25 +457,26 @@ class Device:
         """Returns the preferred username for SSH connections"""
         return self.username
 
-    def retrieve_system_info(self, keyfile_path, save_results=True, pw=None):
-        """Connects via SSH to get system info."""
-        # Make sure keyfile_path is a Path object
-        assert isinstance(
-            keyfile_path, pathlib.Path
-        ), "keyfile_path must be a pathlib.Path object"
-
-        # Get system password from user
-        if not pw:
-            pw = input("\nPlease enter local system password: ")
+    def retrieve_system_info(self, from_device_config=True):
+        """
+        Connects via SSH to get system info from the device, either by
+        reading the device's config file or by running commands on the device
+        
+        Parameters:
+        -----------
+        from_device_config: bool, optional
+            If True, reads the device's config file to get system info instead
+            of running commands on the device
+        """
+        if not self.ready_for_SSH():
+            raise SSHNotReadyException("retrieve_system_info", self.get_current_ip())
 
         # Create a new SSH client
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         # Load the private key
-        private_key = paramiko.RSAKey.from_private_key_file(
-            str(keyfile_path), password=pw
-        )
+        private_key = paramiko.RSAKey(filename=self.ssh_privkey_fp)
 
         # Connect to the server using the private key
         client.connect(
@@ -423,18 +486,23 @@ class Device:
         # Dict to store the information
         info = {}
 
-        # List of commands to execute
-        commands = {
-            "os_family": "uname -s",
-            "cpu_architecture": "uname -m",
-            "ram": "free -m | awk 'NR==2{printf $2}'",  # Returns in MB
-            "hostname": "hostname",
-        }
+        if from_device_config:
+            if not configs.device.remote_file_exists(client, DEVICE_CONFIG_FP):
+                raise NoDeviceConfigException("retrieve_system_info (from config)", self.get_current_ip())
+            
+        else:
+            # List of commands to execute
+            commands = {
+                "os_family": "uname -s",
+                "cpu_architecture": "uname -m",
+                "ram_MB": "free -m | awk 'NR==2{printf $2}'",  # Returns in MB
+                "hostname": "hostname",
+            }
 
-        # Execute each command
-        for key, command in commands.items():
-            stdin, stdout, stderr = client.exec_command(command)
-            info[key] = stdout.read().decode().strip()
+            # Execute each command
+            for key, command in commands.items():
+                stdin, stdout, stderr = client.exec_command(command)
+                info[key] = stdout.read().decode().strip()
 
         # Close the connection
         client.close()
