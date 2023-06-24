@@ -19,7 +19,7 @@ from pathlib import Path
 from collections import defaultdict
 
 import api.experiments as experiments
-from api.config_mgr import Configs, ControllerConfigs
+from api.config_mgr import Configs, ControllerConfigs, DeviceConfigs
 from api.network import LAN, Device
 
 
@@ -31,7 +31,9 @@ textfiles = project_root / "setup" / "console_text"
 
 # initialize the config manager
 try:
-    configs = Configs(controller_config=ControllerConfigs())
+    configs = Configs(
+        controller_config=ControllerConfigs(), device_config=DeviceConfigs()
+    )
 except FileNotFoundError:
     print(
         "This machine hasn't been set up as a controller yet.",
