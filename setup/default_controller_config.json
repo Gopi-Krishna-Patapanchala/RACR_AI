@@ -11,10 +11,16 @@
     },
     "known_devices": [
          {
-            "uuid": "",
+            "mac_address": "",
+            "ssh_username": "",
             "device_nickname": "",
-            "primary_user": "",
+            "description": "",
+            "hostname": "",
+            "last_ip": "",
+            "static_ip": "",
+            "type": "",
             "os_family": "",
+            "ram_MB": "",
             "cpu_architecture": ""
         }
     ]
