@@ -146,3 +146,8 @@ device_info
 # Docker image tarballs are too large for the 1MB GitHub filesize limit
 api/Docker_images/*.tar
 
+# Ignore steve's mypy type-checker init file
+.mypy.ini
+
+# Ignore steve's .vscode config folder
+.vscode
