@@ -15,15 +15,15 @@ from api.exceptions import (
     NoIPFoundException,
     NoMACFoundException,
     SSHNotReadyException,
-    NoDeviceConfigException
+    NoDeviceConfigException,
 )
 
 
 # Global constants
 
 
-
 # Global utility functions
+
 
 def mac_doublecheck(host, repeat, wait):
     """
@@ -61,7 +61,8 @@ def mac_doublecheck(host, repeat, wait):
 
 def convert_tenacity(tenacity: int) -> tuple:
     """
-    Convenience function to translate 'tenacity' into actual parameters
+    Convenience function to translate 'tenacity' into actual parameters.
+    It's a bit arbitrary, but it keeps things concise.
 
     Parameters:
     -----------
@@ -83,6 +84,8 @@ def convert_tenacity(tenacity: int) -> tuple:
     repeats = tenacity
     wait_time = 0.005 * 3**tenacity
     recurse = tenacity - 1
+
+    return repeats, wait_time, recurse
 
 
 class Device:
@@ -329,7 +332,8 @@ class Device:
         # if we can establish an SSH connection to the device, we can get
         # more information
         if self.ready_for_SSH():
-
+            pass
+            # TODO: finish implementing this
 
     def ready_for_SSH(self, debug=False):
         """
@@ -461,7 +465,7 @@ class Device:
         """
         Connects via SSH to get system info from the device, either by
         reading the device's config file or by running commands on the device
-        
+
         Parameters:
         -----------
         from_device_config: bool, optional
@@ -488,8 +492,10 @@ class Device:
 
         if from_device_config:
             if not configs.device.remote_file_exists(client, DEVICE_CONFIG_FP):
-                raise NoDeviceConfigException("retrieve_system_info (from config)", self.get_current_ip())
-            
+                raise NoDeviceConfigException(
+                    "retrieve_system_info (from config)", self.get_current_ip()
+                )
+
         else:
             # List of commands to execute
             commands = {
