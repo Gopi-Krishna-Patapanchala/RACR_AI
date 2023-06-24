@@ -50,6 +50,32 @@ def mac_doublecheck(host, repeat, wait):
     return None
 
 
+def convert_tenacity(tenacity: int) -> tuple:
+    """
+    Convenience function to translate 'tenacity' into actual parameters
+
+    Parameters:
+    -----------
+    tenacity: int
+        A number 1-5 representing how much effort should be spent in finding
+        network info (e.g., searching for mac address)
+
+    Returns:
+    --------
+    params: tuple[int, float, int]
+        A tuple containing the ordered parameters 'repeats', 'wait_time', and
+        'recurse'
+    """
+    tenacity = int(tenacity)
+    if tenacity < 1:
+        tenacity = 1
+    elif tenacity > 5:
+        tenacity = 5
+    repeats = tenacity
+    wait_time = 0.005 * 3**tenacity
+    recurse = tenacity - 1
+
+
 class Device:
 
     """
@@ -264,17 +290,23 @@ class Device:
         Attempts to infer missing device information using whatever information
         is available.
         """
-        # find hostname and IP first
+        # find IP, hostname, and MAC first
         if not self.last_ip:
             try:
                 self.get_current_ip(refresh=True)
             except (NoIPFoundException, MissingDeviceDataException):
-                pass
+                if self.static_ip:
+                    self.last_ip = self.static_ip
         if self.last_ip and not self.hostname:
+            self.hostname = self.get_hostname(silent=True, refresh=True)
+        if self.last_ip or self.hostname:
             try:
-                self.hostname = socket.gethostbyaddr(self.last_ip)[0]
-            except socket.herror:
+                self.mac_address = self.get_mac_address(refresh=True)
+            except NoMACFoundException:
                 pass
+
+        # TODO: finish this
+        # Using what we have now, attempt to find the rest
 
     def get_current_ip(self, refresh=False):
         """Attempts to get the current IP address however possible"""
@@ -296,27 +328,28 @@ class Device:
         else:
             return self.last_ip
 
-    def get_mac_address(self):
+    def get_mac_address(self, refresh=False, tenacity=3):
         """Uses getmac to attempt to find MAC, memoizes if successful"""
-        if self.mac_address:
+        if self.mac_address and not refresh:
             return self.mac_address  # if already memoized
+        repeats, wait_time, recurse = convert_tenacity(tenacity)
         if self.hostname:
-            result = get_mac_address(hostname=self.hostname)
+            result = mac_doublecheck(self.hostname, repeats, wait_time)
             if result:
                 return result
         if self.last_ip:
-            result = get_mac_address(ip=self.last_ip)
+            result = mac_doublecheck(self.last_ip, repeats, wait_time)
             if result:
                 return result
         raise NoMACFoundException(f"Hostname: {self.hostname}, IP: {self.last_ip}")
 
-    def get_hostname(self, silent=False):
+    def get_hostname(self, silent=True, refresh=False):
         """Uses socket to attempt to find hostname, memoizes if successful"""
-        if self.hostname:
+        if self.hostname and not refresh:
             return self.hostname  # if already memoized
         try:
             return socket.gethostbyaddr(self.last_ip)[0]
-        except Exception as e:
+        except socket.herror as e:
             if not silent:
                 print(f"No hostname found for {self.last_ip} : {e}")
             return None
@@ -510,14 +543,7 @@ class LAN:
             and hostname of each device found
         """
         # translate tenacity to actual parameters
-        tenacity = int(tenacity)
-        if tenacity < 1:
-            tenacity = 1
-        elif tenacity > 5:
-            tenacity = 5
-        repeats = tenacity
-        wait_time = 0.005 * 3**tenacity
-        recurse = tenacity - 1
+        repeats, wait_time, recurse = convert_tenacity(tenacity)
 
         ips = [str(ip) for ip in ipaddress.ip_network(cidr_block).hosts()]
         ip_mac_tuples = [
