@@ -8,6 +8,63 @@ PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 DEVICE_CONFIG_FP = Path("~/.config/tracr/device_config.json")
 
 
+def remote_file_exists(ssh_client: paramiko.SSHClient, fp: Path) -> bool:
+    """
+    Returns True if the given file path exists on the remote device.
+
+    Parameters:
+    -----------
+    ssh_client: paramiko.SSHClient
+        The SSH client to use to connect to the remote device.
+    fp: Path
+        The file path to check for on the remote device.
+    """
+    # create an SFTP client
+    sftp = ssh_client.open_sftp()
+
+    try:
+        sftp.stat(fp)
+        sftp.close()
+        return True
+    except IOError as e:
+        return False
+
+
+def get_remote_file_contents(
+    ssh_client: paramiko.SSHClient, fp: Path, as_type: str = "string"
+):
+    """
+    Returns the contents of the given file path on the remote device.
+
+    Parameters:
+    -----------
+    ssh_client: paramiko.SSHClient
+        The SSH client to use to connect to the remote device.
+    fp: Path
+        The file path to check for on the remote device.
+    as_type: str, optional
+        The type to return the file contents as. Can be "string" or "json".
+    """
+    # create an SFTP client
+    sftp = ssh_client.open_sftp()
+
+    try:
+        with sftp.file(fp, "r") as f:
+            content = f.read()
+        if as_type == "json":
+            result = json.load(content)
+        elif as_type == "string":
+            result = content.decode()  # decode bytes to string
+        else:
+            result = content.decode()  # TODO: raise an error
+
+        sftp.close()
+        return result
+
+    except IOError as e:
+        return False
+
+
 class ControllerConfigs:
     """
     A class that handles retrieving, editing, and saving data to/from various config files.
@@ -46,7 +103,7 @@ class ControllerConfigs:
         with open(self.controller_config_path, "w") as file:
             json.dump(default, file, indent=4, sort_keys=True)
 
-    def get_known_devices(self):
+    def get_known_devices(self, copy=True) -> list:
         """
         Returns a list of known devices from the controller config file.
         """
@@ -58,6 +115,45 @@ class ControllerConfigs:
             return []
         return known_devs
 
+    def get_known_device_by(self, search_param: str, value: str) -> dict:
+        """
+        Returns a dict representing the known device with the given search_param
+        matching the given value.
+        """
+        known_devices = self.get_known_devices()
+        for device in known_devices:
+            if device[search_param] == value:
+                return device
+        return None
+
+    def edit_known_device(self, id_key_value: tuple, change_key_value: tuple):
+        """
+        Edits the value of a key in a known device dict.
+        """
+        known_devices = self.get_known_devices()
+        for device in known_devices:
+            if device[id_key_value[0]] == id_key_value[1]:
+                device[change_key_value[0]] = change_key_value[1]
+                self.set_known_devices(known_devices)
+                return
+
+    def set_known_devices(self, new_known_devices: dict):
+        """
+        Sets the known devices in the controller config file to the given list of
+        known devices.
+        """
+        with open(self.controller_config_path, "r") as file:
+            config = json.load(file)
+        backup = config.copy()
+        config["known_devices"] = new_known_devices
+        try:
+            with open(self.controller_config_path, "w") as file:
+                json.dump(config, file, indent=4, sort_keys=True)
+        except Exception as e:
+            with open(self.controller_config_path, "w") as file:
+                json.dump(backup, file, indent=4, sort_keys=True)
+            raise e
+
 
 class DeviceConfigs:
     """
@@ -68,60 +164,14 @@ class DeviceConfigs:
     def __init__(self):
         self.device_config_path = DEVICE_CONFIG_FP
 
-    def remote_file_exists(self, ssh_client: paramiko.SSHClient, fp: Path) -> bool:
+    @classmethod
+    def get_stored_device_configs(cls, ssh_client: paramiko.SSHClient):
         """
-        Returns True if the given file path exists on the remote device.
-
-        Parameters:
-        -----------
-        ssh_client: paramiko.SSHClient
-            The SSH client to use to connect to the remote device.
-        fp: Path
-            The file path to check for on the remote device.
+        Returns a dict representing the device's saved info in its JSON configs
         """
-        # create an SFTP client
-        sftp = ssh_client.open_sftp()
-
-        try:
-            sftp.stat(fp)
-            sftp.close()
-            return True
-        except IOError as e:
-            return False
-
-    def get_remote_file_contents(
-        self, ssh_client: paramiko.SSHClient, fp: Path, as_type: str = "string"
-    ):
-        """
-        Returns the contents of the given file path on the remote device.
-
-        Parameters:
-        -----------
-        ssh_client: paramiko.SSHClient
-            The SSH client to use to connect to the remote device.
-        fp: Path
-            The file path to check for on the remote device.
-        as_type: str, optional
-            The type to return the file contents as. Can be "string" or "json".
-        """
-        # create an SFTP client
-        sftp = ssh_client.open_sftp()
-
-        try:
-            with sftp.file(fp, "r") as f:
-                content = f.read()
-            if as_type == "json":
-                result = json.load(content)
-            elif as_type == "string":
-                result = content.decode()  # decode bytes to string
-            else:
-                result = content.decode()  # TODO: raise an error
-
-            sftp.close()
-            return result
-
-        except IOError as e:
-            return False
+        if not remote_file_exists(ssh_client, DEVICE_CONFIG_FP):
+            return None
+        return get_remote_file_contents(ssh_client, DEVICE_CONFIG_FP, as_type="json")
 
     def get_item_from_config(self, ssh_client: paramiko.SSHClient, item: str):
         """
@@ -165,20 +215,17 @@ class DeviceConfigs:
             raise FileNotFoundError("Device config file not found. ")
 
         # create an SFTP client
-        sftp = ssh_client.open_sftp()
+        with ssh_client.open_sftp() as sftp:
+            # read the config file
+            with sftp.file(self.device_config_path, "r") as f:
+                config = json.load(f)
 
-        # read the config file
-        with sftp.file(self.device_config_path, "r") as f:
-            config = json.load(f)
+            # edit the config file
+            config[item] = new_value
 
-        # edit the config file
-        config[item] = new_value
-
-        # write the config file
-        with sftp.file(self.device_config_path, "w") as f:
-            json.dump(config, f, indent=4, sort_keys=True)
-
-        sftp.close()
+            # write the config file
+            with sftp.file(self.device_config_path, "w") as f:
+                json.dump(config, f, indent=4, sort_keys=True)
 
 
 class Configs:

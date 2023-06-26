@@ -192,6 +192,60 @@ def device_refresh(args):
     """
     known_devices = configs.controller.get_known_devices()
 
+    if not known_devices:
+        print("No known devices to refresh")
+        return
+
+    kd_instances = [
+        Device().create_from_dict(dev, auto_update=True) for dev in known_devices
+    ]
+
+    updated_devices = [dev.as_dict() for dev in kd_instances]
+
+    def get_diffs(old: dict, new: dict, instance: Device) -> dict:
+        """
+        Returns a device and dict containing the differences between the old and new dicts
+        """
+        for key in set().union(old.keys(), new.keys()):
+            if key not in old:
+                old[key] = "none"
+            if key not in new:
+                new[key] = ""
+        return (
+            instance,
+            {
+                key: (old[key], new[key])
+                for key in old.keys()
+                if str(old[key]) != str(new[key])
+            },
+        )
+
+    diffs = [
+        get_diffs(old, new, dev)
+        for old, new, dev in zip(known_devices, updated_devices, kd_instances)
+    ]
+
+    for dev, diff in diffs:
+        for key, (old, new) in diff.items():
+            if not isinstance(new, str):
+                new = str(new)
+            configs.controller.edit_known_device(
+                ("mac_address", dev.get_mac_address()), (key, new)
+            )
+            if not args.silent:
+                print(
+                    f"CHANGED LOCAL CONFIGS - {dev.get_shortname()} {key}: {old} -> {new}"
+                )
+
+        if args.remote_file:
+            with dev.open_ssh_client() as client:
+                for key, (old, new) in diff.items():
+                    configs.device.edit_config_item(client, key, new)
+                    if not args.silent:
+                        print(
+                            f"CHANGED REMOTE CONFIGS - {dev.get_shortname()} {key}: {old} -> {new}"
+                        )
+
 
 def device_add(args):
     if args.wizard:
@@ -300,6 +354,25 @@ def main():
         dest="ready",
     )
     parser_device_ls.set_defaults(func=device_ls)
+
+    parser_device_refresh = device_subparsers.add_parser(
+        "refresh", help="refresh known device information"
+    )
+    parser_device_refresh.add_argument(
+        "-s",
+        "--silent",
+        action="store_true",
+        help="do not print any output",
+        dest="silent",
+    )
+    parser_device_refresh.add_argument(
+        "-r",
+        "--remote",
+        help="update remote device config files",
+        action="store_true",
+        dest="remote_file",
+    )
+    parser_device_refresh.set_defaults(func=device_refresh)
 
     parser_device_add = device_subparsers.add_parser(
         "add", help="add new devices and configure them for experiments"

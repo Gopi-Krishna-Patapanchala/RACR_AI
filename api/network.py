@@ -4,6 +4,7 @@ import re
 import pathlib
 import paramiko
 import ipaddress
+import json
 import platform
 import docker
 import netifaces as ni
@@ -20,6 +21,17 @@ from api.exceptions import (
 
 
 # Global constants
+
+DEB_CMD_OSFAMILY = "uname -s"
+DEB_CMD_CPUARCH = "uname -m"
+DEB_CMD_RAMMB = "free -m | awk 'NR==2{printf $2}'"  # Returns in MB
+DEB_CMD_HOSTNAME = "hostname"
+
+PROJECT_ROOT = Path(__file__).parent.parent.absolute()
+DEFAULT_CONTROLLER_CONFIG_FP = PROJECT_ROOT / "setup/default_controller_config.json"
+with open(DEFAULT_CONTROLLER_CONFIG_FP, "r") as f:
+    config_file_contents = json.load(f)
+DEFAULT_DEVICE_DICT = config_file_contents["known_devices"][0]
 
 
 # Global utility functions
@@ -121,14 +133,15 @@ class Device:
         hostname: str = "",
         ssh_username: str = "",
         ssh_pw: str = "",
-        ssh_pubkey_fp: Path = "",
-        ssh_privkey_fp: Path = "",
+        ssh_pubkey_fp: str = "",
+        ssh_privkey_fp: str = "",
         device_nickname: str = "",
         description: str = "",
         os_family: str = "",
         cpu_architecture: str = "",
         ram_MB: str = "",
-        infer_missing: bool = False,
+        base_image: str = "",
+        auto_update: bool = False,
     ):
         """
         Initializes a Device object from a given device information.
@@ -147,9 +160,9 @@ class Device:
             The username to use when SSHing into the device, by default ""
         ssh_pw : str, optional
             The password to use when SSHing into the device
-        ssh_pubkey_fp: Path, optional
+        ssh_pubkey_fp: str, optional
             The path to the local SSH public key for this device
-        ssh_privkey_fp: Path, optional
+        ssh_privkey_fp: str, optional
             The path to the local SSH private key for this device
         device_nickname : str, optional
             A nickname for the device, by default ""
@@ -161,8 +174,10 @@ class Device:
             The CPU architecture of the device, by default ""
         ram_MB : str, optional
             The amount of RAM on the device, in MB, by default ""
-        infer_missing : bool, optional
-            Whether to infer missing device information during initialization, by default False
+        base_image : str, optional
+            The base_image of device, by default ""
+        auto_update : bool, optional
+            Whether to automatically update the device's information during init, by default False
         """
         self.last_ip = last_ip
         self.static_ip = static_ip
@@ -170,20 +185,22 @@ class Device:
         self.hostname = hostname
         self.ssh_username = ssh_username
         self.ssh_pw = ssh_pw
-        self.ssh_pubkey_fp = ssh_pubkey_fp
-        self.ssh_privkey_fp = ssh_privkey_fp
+        self.ssh_pubkey_fp = Path(ssh_pubkey_fp).expanduser()
+        self.ssh_privkey_fp = Path(ssh_privkey_fp).expanduser()
         self.device_nickname = device_nickname
         self.description = description
         self.os_family = os_family
         self.cpu_architecture = cpu_architecture
         self.ram_MB = ram_MB
+        self.base_image = base_image
 
-        if infer_missing:
-            self.infer_missing()
+        if auto_update:
+            self.refresh(include_system_info=True)
 
     @classmethod
-    def create_from_dict(cls, device_info: dict, infer_missing=False):
-        device_instance = Device(**device_info)
+    def create_from_dict(cls, device_info: dict, auto_update=False):
+        device_instance = Device(**device_info, auto_update=auto_update)
+        return device_instance
 
     @classmethod
     def is_listening(cls, host, port=22, ttl=0.1):
@@ -309,10 +326,47 @@ class Device:
         else:
             return data
 
-    def infer_missing(self):
+    def refresh(self, include_system_info=False):
+        """Refreshes the device's information."""
+        try:
+            self.last_ip = self.get_current_ip(refresh=True)
+        except (NoIPFoundException, MissingDeviceDataException):
+            pass
+        new_hn = self.get_hostname(refresh=True)
+        if new_hn:
+            self.hostname = new_hn
+        try:
+            self.mac_address = self.get_mac_address(refresh=True)
+        except (NoMACFoundException, MissingDeviceDataException):
+            pass
+
+        if include_system_info:
+            self.infer_missing()
+
+    def get_shortname(self):
+        """Searches attributes to find a shortname for the device."""
+        if self.device_nickname:
+            return self.device_nickname
+        elif self.hostname:
+            return self.hostname.split(".")[0]
+        elif self.last_ip:
+            return self.last_ip
+        elif self.mac_address:
+            return self.mac_address
+        else:
+            return "Device"
+
+    def infer_missing(self, defaults=DEFAULT_DEVICE_DICT):
         """
         Attempts to infer missing device information using whatever information
         is available.
+
+        Parameters:
+        -----------
+        defaults: dict, optional
+            A dictionary of default values to use if no information can be inferred,
+            by default uses DEFAULT_DEVICE_DICT constant, but can also be set to use
+            the values in the device's config file.
         """
         # find IP, hostname, and MAC first
         if not self.last_ip:
@@ -332,8 +386,55 @@ class Device:
         # if we can establish an SSH connection to the device, we can get
         # more information
         if self.ready_for_SSH():
-            pass
-            # TODO: finish implementing this
+            self.ask_system_info(store_results=True)
+
+        # finally, fill in any missing values with defaults
+        for key, value in defaults.items():
+            instance_attribute = getattr(self, key, "nonexistent")
+            if instance_attribute == "nonexistent":
+                pass
+            elif not instance_attribute:
+                setattr(self, key, value)
+
+    def as_dict(self):
+        """
+        Returns a dictionary representation of the device.
+        """
+
+        def gets_saved(attr_name):
+            return (
+                not attr_name.startswith("__")
+                and not callable(getattr(self, attr_name))
+                and attr_name in DEFAULT_DEVICE_DICT.keys()
+                and getattr(self, attr_name, False)
+            )
+
+        relevant_attrs = {
+            attr: getattr(self, attr) for attr in dir(self) if gets_saved(attr)
+        }
+
+        result = DEFAULT_DEVICE_DICT.copy()
+        result.update(relevant_attrs)
+        return result
+
+    def open_ssh_client(self, debug=False):
+        """
+        Returns a paramiko SSHClient instance that is connected to the device.
+        """
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        rsa_key = paramiko.RSAKey(filename=self.ssh_privkey_fp)
+        try:
+            client.connect(
+                self.last_ip,
+                username=self.ssh_username,
+                pkey=rsa_key,
+            )
+        except Exception as e:
+            if debug:
+                print(e)
+            return None
+        return client
 
     def ready_for_SSH(self, debug=False):
         """
@@ -360,18 +461,13 @@ class Device:
             return False
 
         # finally, check if we can connect using the stored credentials
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        rsa_key = paramiko.RSAKey(filename=self.ssh_privkey_fp)
-
         try:
-            client.connect(self.last_ip, username=self.ssh_username, pkey=rsa_key)
+            with self.open_ssh_client() as client:
+                client.exec_command("echo 'hello world'")
         except Exception as e:
             if debug:
                 print(e)
             return False
-
-        client.close()
         return True
 
     def get_current_ip(self, refresh=False):
@@ -439,86 +535,85 @@ class Device:
 
     def set_username(self, username):
         """Sets the username for SSH connections"""
+        if not username or not isinstance(username, str):
+            return
         self.username = username
 
     def set_os_family(self, os_family):
         """Sets the os family"""
+        if not os_family or not isinstance(os_family, str):
+            return
         self.os_family = os_family
 
     def set_cpu_architecture(self, cpu_architecture):
         """Sets the cpu_architecture attribute"""
+        if not cpu_architecture or not isinstance(cpu_architecture, str):
+            return
         self.cpu_architecture = cpu_architecture
 
     def set_ram_MB(self, ram_MB):
         """Sets the ram_MB attribute"""
+        if not ram_MB:
+            return
+        if isinstance(ram_MB, str):
+            try:
+                ram_MB = int(ram_MB)
+            except ValueError:
+                return
         self.ram_MB = ram_MB
 
-    def set_local_hostname(self, local_hostname):
+    def set_hostname(self, hostname):
         """Sets the local_hostname attribute"""
-        self.local_hostname = local_hostname
+        if not hostname or not isinstance(hostname, str):
+            return
+        self.hostname = hostname
 
     def get_username(self):
         """Returns the preferred username for SSH connections"""
         return self.username
 
-    def retrieve_system_info(self, from_device_config=True):
+    def ask_system_info(self, store_results: bool = False) -> dict:
         """
-        Connects via SSH to get system info from the device, either by
-        reading the device's config file or by running commands on the device
+        Connects via SSH to get system info from the device by running
+        commands on the device.
 
         Parameters:
         -----------
-        from_device_config: bool, optional
-            If True, reads the device's config file to get system info instead
-            of running commands on the device
+        store_results: bool, optional
+            If True, store the results in the appropriate attributes
+
+        Returns:
+        --------
+        info: dict
+            A dictionary containing the system information
         """
         if not self.ready_for_SSH():
-            raise SSHNotReadyException("retrieve_system_info", self.get_current_ip())
-
-        # Create a new SSH client
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        # Load the private key
-        private_key = paramiko.RSAKey(filename=self.ssh_privkey_fp)
-
-        # Connect to the server using the private key
-        client.connect(
-            self.get_current_ip(), username=self.get_username(), pkey=private_key
-        )
+            raise SSHNotReadyException("ask_system_info", self.get_current_ip())
 
         # Dict to store the information
         info = {}
 
-        if from_device_config:
-            if not configs.device.remote_file_exists(client, DEVICE_CONFIG_FP):
-                raise NoDeviceConfigException(
-                    "retrieve_system_info (from config)", self.get_current_ip()
-                )
+        # List of commands to execute
+        commands = {
+            "os_family": DEB_CMD_OSFAMILY,
+            "cpu_architecture": DEB_CMD_CPUARCH,
+            "ram_MB": DEB_CMD_RAMMB,
+            "hostname": DEB_CMD_HOSTNAME,
+        }
 
-        else:
-            # List of commands to execute
-            commands = {
-                "os_family": "uname -s",
-                "cpu_architecture": "uname -m",
-                "ram_MB": "free -m | awk 'NR==2{printf $2}'",  # Returns in MB
-                "hostname": "hostname",
-            }
-
+        with self.open_ssh_client() as client:
             # Execute each command
             for key, command in commands.items():
                 stdin, stdout, stderr = client.exec_command(command)
                 info[key] = stdout.read().decode().strip()
 
-        # Close the connection
-        client.close()
-
         # Return (after saving args, if necessary)
-        if save_results:
+        if store_results:
             self.set_os_family(info["os_family"])
             self.set_cpu_architecture(info["cpu_architecture"])
-            self.set_ram_MB(info["ram"])
-            self.set_local_hostname(info["hostname"])
+            self.set_ram_MB(info["ram_MB"])
+            self.set_hostname(info["hostname"])
+
         return info
 
     def ready_to_deploy(self):
