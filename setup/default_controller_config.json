@@ -21,7 +21,7 @@
             "hostname": "",
             "last_ip": "",
             "static_ip": "",
-            "type": "",
+            "base_image": "",
             "os_family": "",
             "ram_MB": "",
             "cpu_architecture": ""
