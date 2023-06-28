@@ -1,12 +1,18 @@
 {
     "uuid": "",
-    "nickname": "",
-    "description": "",
-    "device_type": "",
-    "last_seen": "",
+    "shared_nickname": "",
+    "shared_description": "",
+    "base_image": "",
+    "last_connected": "",
+    "network_interfaces": [
+        {
+            "name": "",
+            "mac": "",
+            "type": ""
+        }
+    ],
     "last_edit": {
-        "date": "",
-        "user": "",
+        "datetime": "",
         "controller": ""
     }
 }

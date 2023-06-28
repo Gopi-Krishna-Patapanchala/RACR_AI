@@ -29,18 +29,9 @@ project_root = Path(__file__).parent.absolute()
 # path to console text files
 textfiles = project_root / "setup" / "console_text"
 
-# initialize the config manager
-try:
-    configs = Configs(
-        controller_config=ControllerConfigs(), device_config=DeviceConfigs()
-    )
-except FileNotFoundError:
-    print(
-        "This machine hasn't been set up as a controller yet.",
-        "Run 'tracr setup --help' for setup commands.",
-        sep="\n",
-    )
-    sys.exit(1)
+# The config manager will be treated like a singleton, so it is intantiated
+# here and initialized in the main function.
+configs = None
 
 
 # trivial function to be concise
@@ -52,10 +43,33 @@ def get_text(textfile: Path) -> str:
 
 # CLI is split up into submodules responsible for different operations, so
 # there are lots of arguments that can be used, each with their own option
-# flags and arguments. This is all organized using argparse
+# flags and arguments. This is all organized using argparse, which reads
+# the arguments and options and passes them to the appropriate function.
+
+##############################################################################
+##################### DEVICE SUBMODULE FUNCTIONS #############################
+##############################################################################
 
 
 def device_ls(args):
+    """
+    Shows the user a list of devices filtered by the given flags.
+
+    Called by the "tracr device ls [-options]" command.
+
+    Parameters:
+    -----------
+    args: argparse.Namespace
+        The arguments and options passed to the CLI.
+        "known": bool
+            A flag to show only known devices.
+        "unknown": bool
+            A flag to show only unknown devices.
+        "listening": bool
+            A flag to show only devices that are listening for connections.
+        "ready": bool
+            A flag to show only devices that are ready to be used.
+    """
     # explicitly set the flags to False if they are not set
     known = bool(args.known)
     unknown = bool(args.unknown)
@@ -88,7 +102,7 @@ def device_ls(args):
         tag_status(listening_devices, "listening")
         # if -u is set, we will need a list of listening devices that are not known
         if unknown or want_all:
-            known_macs = [device.get("mac_address") for device in known_devices]
+            known_macs = configs.controller.get_known_macs()
             unknown_devices = [
                 device
                 for device in listening_devices
@@ -129,9 +143,18 @@ def device_ls(args):
                 if len(dicts_with_val) > 1:
                     combo_dict = {}
                     for key in all_keys:
-                        all_vals = list(
-                            set([d[key] for d in dicts_with_val if d[key] != ""])
-                        )
+                        try:
+                            all_vals = list(
+                                set([d[key] for d in dicts_with_val if d[key] != ""])
+                            )
+                        except TypeError:
+                            if isinstance(dicts_with_val[0][key], list):
+                                all_vals = [d[key] for d in dicts_with_val]
+                                all_vals = [d for sublist in all_vals for d in sublist]
+                                all_vals = [
+                                    str(dict(t))
+                                    for t in set(tuple(d.items()) for d in all_vals)
+                                ]
                         if combine and key == combine:
                             combo_dict[key] = ", ".join(sorted(all_vals))
                         else:
@@ -143,12 +166,12 @@ def device_ls(args):
 
         return cleaned_list, list(all_keys)
 
-    device_list, fields = merge_dicts(*dev_groups, unique="mac_address", combine="tag")
+    device_list, fields = merge_dicts(*dev_groups, unique="uuid", combine="tag")
 
     def custom_sort_key(item):
         """A custom sort key for the table, so that the columns are in a somewhat specific order"""
         mapping = {
-            "mac_address": 0,
+            "uuid": 0,
             "status": 1,
             "nickname": 2,
             "last_ip": 3,
@@ -188,7 +211,19 @@ def device_ls(args):
 
 def device_refresh(args):
     """
-    Updates known device information in the config file using the current network state
+    Updates known device information in the controller's local config file using the
+    current network state.
+
+    Called by the "tracr device refresh [-options]" command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed arguments from the command line
+        'silent' : bool
+            If True, the function will not print anything to the console
+        'remote_device' : bool
+            If True, the function will also update the remote device's config file
     """
     known_devices = configs.controller.get_known_devices()
 
@@ -265,8 +300,25 @@ def device_add(args):
 
 
 def setup_controller(args):
-    # TODO: define setup controller function
-    pass
+    reset = bool(args.reset)
+    if args.overwrite:
+        overwrites = {
+            param: value
+            for param, value in [param.split("=") for param in args.overwrite]
+        }
+    else:
+        overwrites = False
+
+    if reset and ControllerConfigs().config_file_exists_locally():
+        confirm = input("Are you sure you want to reset the controller? [y/N] ")
+        if not confirm.lower().startswith("y"):
+            return
+        ControllerConfigs().erase_local_config_file()
+    new_configs = ControllerConfigs(make_new_config_file=True)
+
+    if overwrites:
+        for param, value in overwrites.items():
+            new_configs.edit_config_item(param, value, category="controller")
 
 
 def setup_device(args):
@@ -478,7 +530,20 @@ def main():
     parser_setup_controller = setup_subparsers.add_parser(
         "controller", help="Set up the controller"
     )
-    # TODO: add arguments for controller setup
+    parser_setup_controller.add_argument(
+        "-r",
+        "--reset",
+        action="store_true",
+        dest="reset",
+        help="reset the controller configuration",
+    )
+    parser_setup_controller.add_argument(
+        "-o",
+        "--overwrite",
+        nargs="+",
+        dest="overwrite",
+        help="controllerParam=overwriteValue",
+    )
     parser_setup_controller.set_defaults(func=setup_controller)
 
     parser_setup_device = setup_subparsers.add_parser("device", help="Set up a device")
@@ -493,6 +558,21 @@ def main():
 
     args = parser.parse_args()
     if "func" in args:
+        global configs
+        if "setup_controller" not in args.func.__name__:
+            # initialize the config manager as a global singleton
+            try:
+                configs = Configs(
+                    controller_config=ControllerConfigs(), device_config=DeviceConfigs()
+                )
+            except FileNotFoundError as e:
+                print(
+                    e,
+                    "This machine may not have been set up as a controller yet.",
+                    "Run 'tracr setup --help' for setup commands.",
+                    sep="\n",
+                )
+                sys.exit(1)
         args.func(args)
     else:
         parser.print_help()
