@@ -11,7 +11,14 @@
     },
     "known_devices": [
          {
-            "mac_address": "",
+            "uuid": "",
+            "network_interfaces": [
+                {
+                    "name": "",
+                    "mac": "",
+                    "type": ""
+                }
+            ],
             "ssh_username": "",
             "ssh_pw": "",
             "ssh_pubkey_fp": "",
