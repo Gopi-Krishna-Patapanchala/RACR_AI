@@ -288,11 +288,17 @@ class Device:
 
     @classmethod
     def fetch_data(
-        cls, ip=None, mac=None, hostname=None, repeat=3, wait=0.01, recurse=1
+        cls,
+        last_ip=None,
+        mac_address=None,
+        hostname=None,
+        repeat=3,
+        wait=0.01,
+        recurse=1,
     ) -> dict:
         """Fetches data from an unknown device, given any one of its identifiers"""
 
-        data = {"last_ip": ip, "mac_address": mac, "hostname": hostname}
+        data = {"last_ip": last_ip, "mac_address": mac_address, "hostname": hostname}
 
         if not data.get("last_ip"):
             if data.get("hostname"):

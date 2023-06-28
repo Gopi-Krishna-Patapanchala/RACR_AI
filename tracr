@@ -98,13 +98,15 @@ def device_ls(args):
     # if -u, -r, or -l is set, we will need to know which devices are responsive
     if unknown or listening or ready or want_all:
         responsive_device_ips = LAN().get_responsive_hosts()
-        listening_devices = [Device().fetch_data(ip=ip) for ip in responsive_device_ips]
+        listening_devices = [
+            Device().fetch_data(last_ip=ip) for ip in responsive_device_ips
+        ]
         tag_status(listening_devices, "listening")
         # if -u is set, we will need a list of listening devices that are not known
         if unknown or want_all:
             known_macs = configs.controller.get_known_macs()
             unknown_devices = [
-                device
+                device.copy()
                 for device in listening_devices
                 if device.get("mac_address") not in known_macs
             ]
@@ -136,6 +138,14 @@ def device_ls(args):
 
         # combine dicts describing the same device
         if unique:
+            best_identifier, unique_count = None, 0
+            for identifier in unique:
+                if identifier in all_keys:
+                    uc = len(set([d.get(identifier, None) for d in merged]))
+                    if uc > unique_count:
+                        best_identifier, unique_count = identifier, uc
+            unique = best_identifier
+
             cleaned_list = []
             unique_vals = set([d[unique] for d in merged])
             for val in unique_vals:
@@ -145,16 +155,17 @@ def device_ls(args):
                     for key in all_keys:
                         try:
                             all_vals = list(
-                                set([d[key] for d in dicts_with_val if d[key] != ""])
+                                set(
+                                    [
+                                        str(d[key])
+                                        for d in dicts_with_val
+                                        if d[key] != ""
+                                    ]
+                                )
                             )
                         except TypeError:
-                            if isinstance(dicts_with_val[0][key], list):
-                                all_vals = [d[key] for d in dicts_with_val]
-                                all_vals = [d for sublist in all_vals for d in sublist]
-                                all_vals = [
-                                    str(dict(t))
-                                    for t in set(tuple(d.items()) for d in all_vals)
-                                ]
+                            # TODO: figure out what to do with nested dict values
+                            continue
                         if combine and key == combine:
                             combo_dict[key] = ", ".join(sorted(all_vals))
                         else:
@@ -166,7 +177,9 @@ def device_ls(args):
 
         return cleaned_list, list(all_keys)
 
-    device_list, fields = merge_dicts(*dev_groups, unique="uuid", combine="tag")
+    device_list, fields = merge_dicts(
+        *dev_groups, unique=("uuid", "last_ip", "mac_address"), combine="status"
+    )
 
     def custom_sort_key(item):
         """A custom sort key for the table, so that the columns are in a somewhat specific order"""
