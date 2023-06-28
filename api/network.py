@@ -94,8 +94,8 @@ def convert_tenacity(tenacity: int) -> tuple:
     elif tenacity > 5:
         tenacity = 5
     repeats = tenacity
-    wait_time = 0.005 * 3**tenacity
-    recurse = tenacity - 1
+    wait_time = 0.01 * 2**tenacity
+    recurse = sum(((tenacity > 1), (tenacity > 4)))
 
     return repeats, wait_time, recurse
 
