@@ -5,10 +5,12 @@
     "node_types": [
         {
             "name": "client",
-            "depends_on": ["server"]
+            "depends_on": [
+                "remote"
+            ]
         },
         {
-            "name": "server",
+            "name": "remote",
             "depends_on": []
         }
     ]

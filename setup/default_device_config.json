@@ -1,9 +1,5 @@
 {
     "uuid": "",
-    "shared_nickname": "",
-    "shared_description": "",
-    "base_image": "",
-    "last_connected": "",
     "network_interfaces": [
         {
             "name": "",
@@ -11,8 +7,13 @@
             "type": ""
         }
     ],
-    "last_edit": {
-        "datetime": "",
-        "controller": ""
-    }
+    "shared_nickname": "",
+    "shared_description": "",
+    "base_image": "",
+    "hostname": "",
+    "last_ip": "",
+    "static_ip": "",
+    "os_family": "",
+    "ram_MB": "",
+    "cpu_architecture": ""
 }

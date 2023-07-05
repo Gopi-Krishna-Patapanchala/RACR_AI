@@ -10,7 +10,10 @@ the word "python".
 """
 
 import argparse
+import json
 import socket
+import os
+import shutil
 import sys
 from rich.console import Console
 from rich.table import Table
@@ -18,9 +21,9 @@ from getmac import get_mac_address
 from pathlib import Path
 from collections import defaultdict
 
-import api.experiments as experiments
+from api.experiments import Experiment
 from api.config_mgr import Configs, ControllerConfigs, DeviceConfigs
-from api.network import LAN, Device
+from api.network import LAN, Device, Controller
 
 
 # path to this file's location
@@ -31,7 +34,7 @@ textfiles = project_root / "setup" / "console_text"
 
 # The config manager will be treated like a singleton, so it is intantiated
 # here and initialized in the main function.
-configs = None
+controller = None
 
 
 # trivial function to be concise
@@ -79,13 +82,8 @@ def device_ls(args):
     # if for some reason -ku or -ru is set, the correct output is none
     want_none = (known and unknown) or (ready and unknown)
     if want_none:
-        print("No devices matching criteria")
+        print("\nNo devices matching criteria\n")
         return
-
-    def tag_status(devlist: list, tag: str) -> list:
-        """A little helper function for adding a tag to each device in a list"""
-        for dev in devlist:
-            dev["status"] = tag
 
     # if no flags are set, then all devices should be shown
     want_all = not (known or unknown or listening or ready)
@@ -93,8 +91,10 @@ def device_ls(args):
     # if -k or -u is set, we will need a list of known devices
     known_devices = []
     if known or unknown or want_all:
-        known_devices = configs.controller.get_known_devices()
-        tag_status(known_devices, "known")
+        known_devices = controller.config.get_known_devices()
+        for d in known_devices:
+            d["auto_update"] = True
+        known_devices = [Device(controller, **d) for d in known_devices]
 
     # if -u, -r, or -l is set, we will need to know which devices are responsive
     listening_devices, unknown_devices = [], []
@@ -103,86 +103,53 @@ def device_ls(args):
         listening_devices = [
             Device().fetch_data(last_ip=ip) for ip in responsive_device_ips
         ]
-        tag_status(listening_devices, "listening")
+        for d in listening_devices:
+            d["auto_update"] = True
+        listening_devices = [Device(controller, **d) for d in listening_devices]
         # if -u is set, we will need a list of listening devices that are not known
         if unknown or want_all:
-            known_macs = configs.controller.get_known_macs()
+            known_macs = controller.config.get_known_macs()
             unknown_devices = [
-                device.copy()
+                device
                 for device in listening_devices
-                if device.get("mac_address") not in known_macs
+                if device.uuid not in controller.config.get_known_uuids()
             ]
-            tag_status(unknown_devices, "unknown")
+            for device in unknown_devices:
+                device.assign_new_uuid()
 
     # if -r is set, we will need to see which of the listening devices are ready
     ready_devices = []
     if ready or want_all:
-        ready_devices = [dev for dev in listening_devices if Device().is_ready(dev)]
-        tag_status(ready_devices, "ready")
+        ready_devices = [dev for dev in listening_devices if dev.is_ready()]
 
     k = known_devices
     u = unknown_devices
     l = listening_devices
     r = ready_devices
 
-    dev_groups = [group for group in (k, u, l, r) if group]
+    all_devices = [device for group in (k, u, l, r) if group for device in group]
 
-    def merge_dicts(*args, unique=None, combine=None):
-        # Combine all the list-of-dicts into a single list-of-dicts
-        merged = [item for sublist in args for item in sublist]
+    instances_by_uuid = defaultdict(list)
+    for instance in all_devices:
+        instances_by_uuid[instance.uuid].append(instance)
 
-        # Find the union of all the keys
-        all_keys = set().union(*[d.keys() for d in merged])
+    integrated_instances = []
+    for uuid, instances in instances_by_uuid.items():
+        integrated_instance = instances[0]
+        for other_instance in instances[1:]:
+            integrated_instance = integrated_instance.absorb(other_instance)
+        integrated_instances.append(integrated_instance)
 
-        # Add missing keys with an empty string value
-        for d in merged:
-            for key in all_keys:
-                d.setdefault(key, "")
+    all_devices = integrated_instances
 
-        # combine dicts describing the same device
-        if unique:
-            best_identifier, unique_count = None, 0
-            for identifier in unique:
-                if identifier in all_keys:
-                    uc = len(set([d.get(identifier, None) for d in merged]))
-                    if uc > unique_count:
-                        best_identifier, unique_count = identifier, uc
-            unique = best_identifier
-
-            cleaned_list = []
-            unique_vals = set([d[unique] for d in merged])
-            for val in unique_vals:
-                dicts_with_val = [d for d in merged if d[unique] == val]
-                if len(dicts_with_val) > 1:
-                    combo_dict = {}
-                    for key in all_keys:
-                        try:
-                            all_vals = list(
-                                set(
-                                    [
-                                        str(d[key])
-                                        for d in dicts_with_val
-                                        if d[key] != ""
-                                    ]
-                                )
-                            )
-                        except TypeError:
-                            # TODO: figure out what to do with nested dict values
-                            continue
-                        if combine and key == combine:
-                            combo_dict[key] = ", ".join(sorted(all_vals))
-                        else:
-                            # TODO: throw an error if there are multiple values for a non-combine key
-                            combo_dict[key] = ", ".join(sorted(all_vals))
-                    cleaned_list.append(combo_dict)
-                else:
-                    cleaned_list.append(dicts_with_val[0])
-
-        return cleaned_list, list(all_keys)
-
-    device_list, fields = merge_dicts(
-        *dev_groups, unique=("uuid", "last_ip", "mac_address"), combine="status"
-    )
+    for device in all_devices:
+        status = []
+        for listname, tag in zip(
+            (k, u, l, r), ("known", "unknown", "listening", "ready")
+        ):
+            if device in listname:
+                status.append(tag)
+        device.status = ", ".join(status)
 
     def custom_sort_key(item):
         """A custom sort key for the table, so that the columns are in a somewhat specific order"""
@@ -199,11 +166,12 @@ def device_ls(args):
             # if it's not one of the special ones, use 5 as base for alphabetical order
             return 5, item
 
-    fields = sorted(fields, key=custom_sort_key)
-    rows = [[device.get(field) for field in fields] for device in device_list]
+    fields = sorted(list(Device.get_default_attribs()), key=custom_sort_key)
+    fields.insert(1, "status")
+    rows = [[device._get(field) for field in fields] for device in all_devices]
 
     table = Table(
-        title=f"{len(device_list)} DEVICE{'S' if len(device_list) > 1 else ''} FOUND"
+        title=f"{len(all_devices)} DEVICE{'S' if len(all_devices) != 1 else ''} FOUND"
     )
 
     for field in fields:
@@ -242,15 +210,13 @@ def device_refresh(args):
         'remote_device' : bool
             If True, the function will also update the remote device's config file
     """
-    known_devices = configs.controller.get_known_devices()
+    known_devices = controller.config.get_known_devices()
 
     if not known_devices:
         print("No known devices to refresh")
         return
 
-    kd_instances = [
-        Device().create_from_dict(dev, auto_update=True) for dev in known_devices
-    ]
+    kd_instances = [Device(**dev, auto_update=True) for dev in known_devices]
 
     updated_devices = [dev.as_dict() for dev in kd_instances]
 
@@ -281,7 +247,7 @@ def device_refresh(args):
         for key, (old, new) in diff.items():
             if not isinstance(new, str):
                 new = str(new)
-            configs.controller.edit_known_device(
+            controller.config.edit_known_device(
                 ("mac_address", dev.get_mac_address()), (key, new)
             )
             if not args.silent:
@@ -292,7 +258,7 @@ def device_refresh(args):
         if args.remote_file:
             with dev.open_ssh_client() as client:
                 for key, (old, new) in diff.items():
-                    configs.device.edit_config_item(client, key, new)
+                    controller.device.edit_config_item(client, key, new)
                     if not args.silent:
                         print(
                             f"CHANGED REMOTE CONFIGS - {dev.get_shortname()} {key}: {old} -> {new}"
@@ -316,6 +282,33 @@ def device_add(args):
         pass
 
 
+##############################################################################
+#################### EXPERIMENT SUBMODULE FUNCTIONS ##########################
+##############################################################################
+
+
+def experiment_add(args):
+    """
+    Adds a new experiment to the controller's local system by setting up
+    a 'blank slate' directory inside of TestCases.
+    """
+    experiment_name = args.name[0]
+    success, message = Experiment.add_new(experiment_name)
+
+    print(f"\n{message}\n")
+
+    if not success:
+        print(
+            "Use 'tracr experiment add --help' for more information on how to use this command."
+        )
+    return
+
+
+##############################################################################
+######################### SETUP SUBMODULE FUNCTIONS ##########################
+##############################################################################
+
+
 def setup_controller(args):
     reset = bool(args.reset)
     if args.overwrite:
@@ -331,11 +324,11 @@ def setup_controller(args):
         if not confirm.lower().startswith("y"):
             return
         ControllerConfigs().erase_local_config_file()
-    new_configs = ControllerConfigs(make_new_config_file=True)
+    new_controller = ControllerConfigs(make_new_config_file=True)
 
     if overwrites:
         for param, value in overwrites.items():
-            new_configs.edit_config_item(param, value, category="controller")
+            new_controller.edit_config_item(param, value, category="controller")
 
 
 def setup_device(args):
@@ -532,12 +525,27 @@ def main():
         "name", nargs=1, help="the name of the experiment to be run"
     )
     parser_experiment_run.add_argument(
+        "-l",
+        "--local",
+        help="run the experiment locally using simulated devices",
+        action="store_true",
+        dest="local",
+    )
+    parser_experiment_run.add_argument(
         "-o",
         "--output",
         help="specify a location for performance logging output",
         nargs=1,
         dest="output",
     )
+
+    parser_experiment_add = exp_subparsers.add_parser(
+        "add", help="add a new experiment"
+    )
+    parser_experiment_add.add_argument(
+        "name", nargs=1, help="the name of the experiment to create"
+    )
+    parser_experiment_add.set_defaults(func=experiment_add)
 
     # Parser for 'setup'
     parser_setup = subparsers.add_parser("setup", help="Guided initial setup")
@@ -575,13 +583,11 @@ def main():
 
     args = parser.parse_args()
     if "func" in args:
-        global configs
+        global controller
         if "setup_controller" not in args.func.__name__:
             # initialize the config manager as a global singleton
             try:
-                configs = Configs(
-                    controller_config=ControllerConfigs(), device_config=DeviceConfigs()
-                )
+                controller = Controller()
             except FileNotFoundError as e:
                 print(
                     e,
