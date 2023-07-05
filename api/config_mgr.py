@@ -191,6 +191,12 @@ class ControllerConfigs:
         known_devs = self.get_known_devices()
         return [ni["mac"] for dev in known_devs for ni in dev["network_interfaces"]]
 
+    def get_known_uuids(self) -> list:
+        """
+        Gets a list of UUIDs from the known device configs.
+        """
+        return [uuid.UUID(d["uuid"]) for d in self.get_known_devices()]
+
     def get_known_device_info(self, id: uuid.UUID) -> dict:
         """
         Returns a dict representing the known device with the given UUID.
