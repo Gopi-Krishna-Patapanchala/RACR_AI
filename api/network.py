@@ -8,6 +8,7 @@ import ipaddress
 import json
 import platform
 import docker
+import concurrent.futures
 import netifaces as ni
 from getmac import get_mac_address
 from pathlib import Path
@@ -182,24 +183,8 @@ class Device:
         auto_update : bool, optional
             Whether to automatically update the device's information during init, by default False
         """
-        default_kwargs = {
-            "last_ip": "",
-            "static_ip": "",
-            "network_interfaces": [],
-            "current_mac": "",
-            "hostname": "",
-            "ssh_username": "",
-            "ssh_pw": "",
-            "ssh_pubkey_fp": "",
-            "ssh_privkey_fp": "",
-            "device_nickname": "",
-            "description": "",
-            "os_family": "",
-            "cpu_architecture": "",
-            "ram_MB": "",
-            "base_image": "",
-            "auto_update": False,
-        }
+        default_kwargs = DEFAULT_KNOWN_DEVICE_DICT.copy()
+        default_kwargs["auto_update"] = False
         default_kwargs.update(kwargs)
         auto_update = default_kwargs.pop("auto_update")
         for key, value in default_kwargs.items():
@@ -213,11 +198,21 @@ class Device:
 
     def __eq__(self, other):
         if isinstance(other, Device):
-            return self.uuid == other.uuid
+            if self._get("uuid") and other._get("uuid"):
+                return self._get("uuid") == other._get("uuid")
+            else:
+                return bool(
+                    len(
+                        set(self.get_all_macs()).intersection(set(other.get_all_macs()))
+                    )
+                )
         return False
 
     def __hash__(self):
         return hash(self.uuid)
+
+    def __str__(self):
+        return "\n".join(f"{k}: {v}" for k, v in self.__dict__.items() if v)
 
     @classmethod
     def create_from_dict(cls, device_info: dict, auto_update=False):
@@ -256,24 +251,6 @@ class Device:
             return False
         finally:
             s.close()
-
-    @classmethod
-    def is_ready(cls, device):
-        """
-        Checks if a device is ready to accept an experiment.
-
-        Parameters:
-        -----------
-        device: Device
-            The target device.
-
-        Returns:
-        --------
-        bool
-            True if the device is ready, False otherwise.
-        """
-        # TODO: implement this
-        return False
 
     @classmethod
     def get_ip_from_mac(cls, mac, cidr_block="192.168.1.0/24", repeat=3, wait=0.01):
@@ -316,7 +293,7 @@ class Device:
     def fetch_data(
         cls,
         last_ip=None,
-        mac_address=None,
+        current_mac=None,
         hostname=None,
         repeat=3,
         wait=0.01,
@@ -324,7 +301,7 @@ class Device:
     ) -> dict:
         """Fetches data from an unknown device, given any one of its identifiers"""
 
-        data = {"last_ip": last_ip, "current_mac": mac_address, "hostname": hostname}
+        data = {"last_ip": last_ip, "current_mac": current_mac, "hostname": hostname}
 
         if not data.get("last_ip"):
             if data.get("hostname"):
@@ -366,9 +343,9 @@ class Device:
         if not attribute in set(DEFAULT_KNOWN_DEVICE_DICT.keys()):
             raise AttributeError(f"Device has no attribute '{attribute}'")
         if attribute == "uuid":
-            if self.uuid and not force:
+            if getattr(self, "uuid", None) and not force:
                 raise AttributeError("Device already has a UUID")
-            if not isinstance(value, uuid.UUID):
+            if not (isinstance(value, uuid.UUID) or value == ""):
                 raise TypeError("UUID must be a UUID object")
             self.uuid = value
         elif attribute == "network_interfaces":
@@ -414,29 +391,29 @@ class Device:
                 raise TypeError("SSH password must be a string")
             self.ssh_pw = value
         elif attribute == "ssh_pubkey_fp":
-            if not isinstance(value, Path):
+            if not isinstance(value, Path) and not value == "":
                 try:
                     value = Path(value)
+                    value = value.expanduser().absolute()
+                    if not value.exists():
+                        raise FileNotFoundError(
+                            "SSH public key fingerprint file does not exist"
+                        )
                 except TypeError:
                     raise TypeError(
                         "SSH public key fingerprint must be a string or Path"
                     )
-            value = value.expanduser().absolute()
-            if not value.exists():
-                raise FileNotFoundError(
-                    "SSH public key fingerprint file does not exist"
-                )
             self.ssh_pubkey_fp = value
-        elif attribute == "ssh_privkey":
-            if not isinstance(value, Path):
+        elif attribute == "ssh_privkey_fp":
+            if not isinstance(value, Path) and not value == "":
                 try:
                     value = Path(value)
+                    value = value.expanduser().absolute()
+                    if not value.exists():
+                        raise FileNotFoundError("SSH private key file does not exist")
                 except TypeError:
-                    raise TypeError("SSH private key must be a string or Path")
-            value = value.expanduser().absolute()
-            if not value.exists():
-                raise FileNotFoundError("SSH private key file does not exist")
-            self.ssh_privkey = value
+                    raise TypeError("SSH private key fp must be a string or Path")
+            self.ssh_privkey_fp = value
         elif attribute == "device_nickname":
             if not isinstance(value, str):
                 raise TypeError("Device nickname must be a string")
@@ -447,7 +424,10 @@ class Device:
             self.description = value
         elif attribute == "hostname":
             if not isinstance(value, str):
-                raise TypeError("Hostname must be a string")
+                if value is None:
+                    value = ""
+                else:
+                    raise TypeError("Hostname must be a string")
             self.hostname = value
         elif attribute == "last_ip":
             if not isinstance(value, str):
@@ -488,10 +468,22 @@ class Device:
 
     def _get(self, attribute, as_str=True):
         """Simple getter for device attributes. Class use only."""
-        result = getattr(self, attribute)
+        result = getattr(self, attribute, None)
         if as_str:
             result = str(result)
         return result
+
+    def is_ready(self):
+        """
+        Checks if a device is ready to accept an experiment.
+
+        Returns:
+        --------
+        bool
+            True if the device is ready, False otherwise.
+        """
+        # TODO: implement this
+        return False
 
     def assign_new_uuid(self, force=False):
         """Assigns a new UUID to the device."""
@@ -527,21 +519,20 @@ class Device:
         else:
             return "Device"
 
-    def infer_missing(self, defaults=DEFAULT_KNOWN_DEVICE_DICT):
+    def get_all_macs(self):
+        """Returns all MAC addresses associated with the device."""
+        ni_macs = [interface["mac"] for interface in self.network_interfaces]
+        ni_macs.append(self.current_mac)
+        return [mac for mac in ni_macs if mac]
+
+    def infer_missing(self):
         """
         Attempts to infer missing device information using whatever information
         is available.
-
-        Parameters:
-        -----------
-        defaults: dict, optional
-            A dictionary of default values to use if no information can be inferred,
-            by default uses DEFAULT_DEVICE_DICT constant, but can also be set to use
-            the values in the device's config file.
         """
         # find IP, hostname, and MAC first
-        ipmachost = Device().fetch_data(
-            last_ip=self.last_ip, hostname=self.hostname, mac_address=self.current_mac
+        ipmachost = Device.fetch_data(
+            last_ip=self.last_ip, hostname=self.hostname, current_mac=self.current_mac
         )
         for key, value in ipmachost.items():
             self._set(key, value)
@@ -609,7 +600,8 @@ class Device:
                 if getattr(self, attr, "fail") == "fail":
                     continue
                 elif not getattr(self, attr):
-                    self._set(getattr(other, attr))
+                    self._set(attr, getattr(other, attr))
+        return self
 
     def open_ssh_client(self, debug=False):
         """
@@ -710,11 +702,6 @@ class Device:
                 print(f"No hostname found for {self.last_ip} : {e}")
             return None
 
-    def set_up_passwordless_ssh(self):
-        """Sets up passwordless ssh on the device"""
-        # TODO: implement
-        pass
-
     def is_responsive(self, ttl=0.1, port=22):
         """Checks if host is listening on specified port (22 by default)"""
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -726,10 +713,6 @@ class Device:
         finally:
             s.close()
             return True
-
-    def get_username(self):
-        """Returns the preferred username for SSH connections"""
-        return self.username
 
     def fetch_remote_config(self) -> dict:
         """Uses DeviceConfigs to fetch the contents of the remote config."""
@@ -824,7 +807,22 @@ class LAN:
         """Searches the local network for hosts that respond to socket connections
         on the specified port"""
         ips = ipaddress.ip_network(cidr_block).hosts()
-        return [str(ip) for ip in ips if Device.is_listening(ip, port=port, ttl=ttl)]
+        responsive_hosts = []
+
+        # Define a callable function to pass to the executor
+        def check_host(ip):
+            if Device.is_listening(ip, port=port, ttl=ttl):
+                return str(ip)
+
+        # Use a ThreadPoolExecutor to run `check_host` in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(check_host, ip) for ip in ips}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    responsive_hosts.append(result)
+
+        return responsive_hosts
 
     @classmethod
     def find_all_devices(cls, cidr_block="192.168.1.0/24", tenacity=3):
@@ -847,59 +845,58 @@ class LAN:
         repeats, wait_time, recurse = convert_tenacity(tenacity)
 
         ips = [str(ip) for ip in ipaddress.ip_network(cidr_block).hosts()]
-        ip_mac_tuples = [
-            (ip, mac_doublecheck(ip, repeat=repeats, wait=wait_time)) for ip in ips
-        ]
-        ip_mac_tuples = [tup for tup in ip_mac_tuples if tup[1]]
-        found_devs = [
-            Device().fetch_data(
-                ip=ip, mac=mac, repeat=repeats, wait=wait_time, recurse=recurse
+
+        # Define a function to get mac addresses
+        def get_mac(ip):
+            return ip, mac_doublecheck(ip, repeat=repeats, wait=wait_time)
+
+        # Use a ThreadPoolExecutor to run `get_mac` in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(get_mac, ip) for ip in ips}
+            ip_mac_tuples = [
+                future.result()
+                for future in concurrent.futures.as_completed(futures)
+                if future.result()[1]
+            ]
+
+        # Define a function to fetch device data
+        def fetch_device_data(ip_mac_tuple):
+            return Device.fetch_data(
+                last_ip=ip_mac_tuple[0],
+                current_mac=ip_mac_tuple[1],
+                repeat=repeats,
+                wait=wait_time,
+                recurse=recurse,
             )
-            for ip, mac in ip_mac_tuples
-        ]
+
+        # Use a ThreadPoolExecutor to run `fetch_device_data` in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {
+                executor.submit(fetch_device_data, ip_mac_tuple)
+                for ip_mac_tuple in ip_mac_tuples
+            }
+            found_devs = [
+                future.result() for future in concurrent.futures.as_completed(futures)
+            ]
+
         return found_devs
 
-    def discover_devices(self, cidr_block, port=22, ttl=0.1):
-        """
-        Discover devices on the LAN within the given IP range by attempting to
-        establish a socket connection (on port 22 by default).
-
-        TODO: This should really use threading.
-
-        Parameters:
-        -----------
-        cidr_block (str) : The range of IPs to scan in CIDR format
-            (e.g., "192.168.1.0/24").
-        ttl (float) : Time To Live; how long to wait for a socket connection
-            before moving on
-        port (int) : Which port to attempt socket connections through
-        """
-        ip_range = ipaddress.ip_network(cidr_block).hosts()
-        responsive_hosts = []
-
-        for host in ip_range:
-            if Device().is_listening(host, port=port, ttl=ttl):
-                responsive_hosts.append(host)
-
-        self.devices = [Device(session_ip=str(host)) for host in responsive_hosts]
-        return
-
-    def display_devices(self):
+    def display_devices(self, refresh_first=False):
         """
         Display the IP addresses and hostnames of all the devices in the LAN.
         """
-        for i, device in enumerate(self.devices):
-            ip = device.get_current_ip()
-            hname = device.get_hostname(silent=True)
-            if not hname:
-                hname = "No DNS record found."
-            mac = device.get_current_mac()
-            print(
-                f"\nDEVICE {i+1}",
-                "---------",
-                f"\tIP Address: {ip}",
-                f"\tHostname: {hname}",
-                f"\tMAC Address: {mac}",
-                sep="\n",
-            )
-        print("")
+        if refresh_first:
+            dev_info = self.find_all_devices()
+            for d in dev_info:
+                d["auto_update"] = True
+            self.devices = [Device(self.controller, **d) for d in dev_info]
+        for d in self.devices:
+            print(f"\n{d}\n")
+
+
+if __name__ == "__main__":
+    # Create a LAN object
+    local_network = LAN()
+
+    # Display the devices on the LAN
+    local_network.display_devices(refresh_first=True)
