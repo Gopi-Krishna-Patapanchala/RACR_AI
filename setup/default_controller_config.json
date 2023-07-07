@@ -19,6 +19,7 @@
                     "type": ""
                 }
             ],
+            "current_mac": "",
             "ssh_username": "",
             "ssh_pw": "",
             "ssh_pubkey_fp": "",

@@ -15,6 +15,8 @@ import socket
 import os
 import shutil
 import sys
+from rich.panel import Panel
+from rich.columns import Columns
 from rich.console import Console
 from rich.table import Table
 from getmac import get_mac_address
@@ -73,124 +75,77 @@ def device_ls(args):
         "ready": bool
             A flag to show only devices that are ready to be used.
     """
-    # explicitly set the flags to False if they are not set
-    known = bool(args.known)
-    unknown = bool(args.unknown)
-    listening = bool(args.listening)
-    ready = bool(args.ready)
 
     # if for some reason -ku or -ru is set, the correct output is none
-    want_none = (known and unknown) or (ready and unknown)
-    if want_none:
+    if (args.known and args.unknown) or (args.ready and args.unknown):
         print("\nNo devices matching criteria\n")
         return
 
-    # if no flags are set, then all devices should be shown
-    want_all = not (known or unknown or listening or ready)
+    # if no flags are set, show all devices
+    want_all = not (args.known or args.unknown or args.ready or args.listening)
 
-    # if -k or -u is set, we will need a list of known devices
-    known_devices = []
-    if known or unknown or want_all:
-        known_devices = controller.config.get_known_devices()
-        for d in known_devices:
-            d["auto_update"] = True
-        known_devices = [Device(controller, **d) for d in known_devices]
-
-    # if -u, -r, or -l is set, we will need to know which devices are responsive
-    listening_devices, unknown_devices = [], []
-    if unknown or listening or ready or want_all:
-        responsive_device_ips = LAN().get_responsive_hosts()
-        listening_devices = [
-            Device().fetch_data(last_ip=ip) for ip in responsive_device_ips
-        ]
-        for d in listening_devices:
-            d["auto_update"] = True
-        listening_devices = [Device(controller, **d) for d in listening_devices]
-        # if -u is set, we will need a list of listening devices that are not known
-        if unknown or want_all:
-            known_macs = controller.config.get_known_macs()
-            unknown_devices = [
-                device
-                for device in listening_devices
-                if device.uuid not in controller.config.get_known_uuids()
-            ]
-            for device in unknown_devices:
-                device.assign_new_uuid()
-
-    # if -r is set, we will need to see which of the listening devices are ready
-    ready_devices = []
-    if ready or want_all:
-        ready_devices = [dev for dev in listening_devices if dev.is_ready()]
-
-    k = known_devices
-    u = unknown_devices
-    l = listening_devices
-    r = ready_devices
-
-    all_devices = [device for group in (k, u, l, r) if group for device in group]
-
-    instances_by_uuid = defaultdict(list)
-    for instance in all_devices:
-        instances_by_uuid[instance.uuid].append(instance)
-
-    integrated_instances = []
-    for uuid, instances in instances_by_uuid.items():
-        integrated_instance = instances[0]
-        for other_instance in instances[1:]:
-            integrated_instance = integrated_instance.absorb(other_instance)
-        integrated_instances.append(integrated_instance)
-
-    all_devices = integrated_instances
-
-    for device in all_devices:
-        status = []
-        for listname, tag in zip(
-            (k, u, l, r), ("known", "unknown", "listening", "ready")
-        ):
-            if device in listname:
-                status.append(tag)
-        device.status = ", ".join(status)
-
-    def custom_sort_key(item):
-        """A custom sort key for the table, so that the columns are in a somewhat specific order"""
-        mapping = {
-            "uuid": 0,
-            "status": 1,
-            "nickname": 2,
-            "last_ip": 3,
-            "static_ip": 4,
-        }
-        if item in mapping:
-            return (mapping[item],)
-        else:
-            # if it's not one of the special ones, use 5 as base for alphabetical order
-            return 5, item
-
-    fields = sorted(list(Device.get_default_attribs()), key=custom_sort_key)
-    fields.insert(1, "status")
-    rows = [[device._get(field) for field in fields] for device in all_devices]
-
-    table = Table(
-        title=f"{len(all_devices)} DEVICE{'S' if len(all_devices) != 1 else ''} FOUND"
+    # fetch all required devices at once
+    known_devices = (
+        controller.config.get_known_devices()
+        if args.known or args.unknown or want_all
+        else []
     )
+    known_devices = [Device(controller, **d) for d in known_devices]
 
-    for field in fields:
-        # justify, style, no_wrap
-        j, s, nw = "left", "white", True
-        if "mac" in field or "ip" in field:
-            j = "center"
-        if "status" in field:
-            s = "cyan"
-        if "description" in field:
-            nw = False
-        table.add_column(field, justify=j, style=s, no_wrap=nw)
+    fetched_devices = (
+        [Device.fetch_data(last_ip=ip) for ip in LAN.get_responsive_hosts()]
+        if args.unknown or args.listening or args.ready or want_all
+        else []
+    )
+    for d in fetched_devices:
+        d["auto_update"] = True
+    listening_devices = [Device(controller, **d) for d in fetched_devices]
 
-    for row in rows:
-        table.add_row(*row)
+    # derive the unknown and ready devices
+    known_macs = set(controller.config.get_known_macs())
+    unknown_devices = [
+        device for device in listening_devices if device.uuid not in known_macs
+    ]
+    ready_devices = [device for device in listening_devices if device.is_ready()]
 
-    print("")
+    device_types = {
+        "known": known_devices,
+        "unknown": unknown_devices,
+        "listening": listening_devices,
+        "ready": ready_devices,
+    }
+
+    # All devices to be displayed
+    all_devices = [device for devices in device_types.values() for device in devices]
+
+    # Combine instances by uuid
+    combined_instances = {}
+    for instance in all_devices:
+        if instance.uuid in combined_instances:
+            combined_instances[instance.uuid] = combined_instances[
+                instance.uuid
+            ].absorb(instance)
+        else:
+            combined_instances[instance.uuid] = instance
+
+    # Assign status to all devices
+    for device in combined_instances.values():
+        device.status = ", ".join(
+            tag for tag, devices in device_types.items() if device in devices
+        )
+
     console = Console()
-    console.print(table)
+    panels = []
+
+    fields = list(Device.get_default_attribs())
+    fields.insert(1, "status")
+
+    for device in combined_instances.values():
+        device_info = "\n".join([f"{field}: {device._get(field)}" for field in fields])
+        panel = Panel(device_info)
+        panels.append(panel)
+
+    console.print(Columns(panels))
     return
 
 
