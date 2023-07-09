@@ -8,6 +8,51 @@ class InvalidConfigFileException(Exception):
         super().__init__(self.message)
 
 
+class DeviceUnavailableException(Exception):
+    """
+    Raised if a network operation is attempted on a device that is not available.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
+class DeviceNameConflictException(Exception):
+    """
+    Raised if two devices are found with the same name.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
+class MalformedUUIDException(Exception):
+    """
+    Raised if a value expected to be a valid UUID is not.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
+class UUIDExistsException(Exception):
+    """
+    Raised if an operation attempts to overwrite an existing UUID.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
+class MissingSetupException(Exception):
+    """
+    Raised if an operation fails because setup has not been completed.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
 class MissingDeviceDataException(Exception):
     """
     An exception raised when a getter is called without enough information.
