@@ -26,6 +26,15 @@ class DeviceNameConflictException(Exception):
         super().__init__(message)
 
 
+class ExperimentNameConflictException(Exception):
+    """
+    Raised if a user attempts to make two experiments with the same name.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
 class MalformedUUIDException(Exception):
     """
     Raised if a value expected to be a valid UUID is not.
