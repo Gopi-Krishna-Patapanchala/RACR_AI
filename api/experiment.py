@@ -121,7 +121,8 @@ class ExperimentConfig(Config):
             "types": {
                 "Client": {
                     "depends_on": "Server",
-                    "python_version": "3.8.3",
+                    "python_version": "3.6",
+                    "main_file": "main.py",
                     "requires_gpu": False,
                     "uses_gpu": False,
                     "supported_cpu_architectures": ["x86_64", "arm64"],
@@ -131,7 +132,8 @@ class ExperimentConfig(Config):
                 },
                 "Server": {
                     "depends_on": None,
-                    "python_version": "3.8.3",
+                    "python_version": "3.6",
+                    "main_file": "main.py",
                     "requires_gpu": False,
                     "uses_gpu": False,
                     "supported_cpu_architectures": ["x86_64", "arm64"],
@@ -366,12 +368,15 @@ class ExperimentManager:
             (ndir / "requirements.txt").touch()
             (ndir / "main.py").touch()
             (ndir / ".python-version").touch()
-            with open(ndir / ".python-version", "w") as f:
-                f.write(info.get("python_version", "3.8.5"))
 
             # Create a virtual environment in the directory
-            venv_dir = (ndir / "venv").expanduser().absolute()
-            subprocess.run(["python3", "-m", "venv", f"{name}_venv"], cwd=ndir)
+            subprocess.run(["python3", "-m", "venv", f"{name.lower()}_venv"], cwd=ndir)
+
+            # Add the .python-version file to the dir so pyenv can enforce
+            # the correct python version
+            pversion = info["python_version"]
+            subprocess.run(["pyenv", "install", "-s", pversion], cwd=ndir)
+            subprocess.run(["pyenv", "local", pversion], cwd=ndir)
 
         # Now we can add the experiment to the collection
         try:
