@@ -1,19 +1,30 @@
+# information about this config file
 meta:
   name: ''
   date_created: ''
   last_modified: ''
+
+# dataset configuration
 datasets:
   directory: Datasets
+
+# model configuration
 models:
   directory: Models
+
+# output configuration
 output:
   directory: Output
+
+# node configuration
 nodes:
   directory: NodeTypes
   types:
+
     Client:
       depends_on: Remote
-      python_version: 3.8.3
+      python_version: 3.6
+      main_file: run_client.py
       requires_gpu: false
       uses_gpu: false
       supported_cpu_architectures:
@@ -22,9 +33,11 @@ nodes:
       min_ram_mb: 1000
       supports_multiple_instances: true
       grpc_port: 50051
+
     Remote:
       depends_on: null
-      python_version: 3.8.3
+      python_version: 3.6
+      main_file: run_server.py
       requires_gpu: false
       uses_gpu: false
       supported_cpu_architectures:
@@ -33,6 +46,8 @@ nodes:
       min_ram_mb: 1000
       supports_multiple_instances: false
       grpc_port: 50051
+
+# overall experiment configuration
 runtime:
   run_command_parameters:
   - NUM_CLIENTS
