@@ -1,4 +1,4 @@
-#!/home/stevepic95/Source/AVResearch/RACR_AI/TestCases/OGAlexnetSplit/NodeTypes/Client/client_venv/bin/python
+#!/home/stevepic95/Source/AVResearch/RACR_AI/TestCases/OGAlexnetSplit/NodeTypes/Remote/remote_venv/bin/python
 
 # -*- coding: utf-8 -*-
 import re
