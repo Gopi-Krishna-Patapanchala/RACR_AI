@@ -121,7 +121,10 @@ class ExperimentConfig(Config):
             "types": {
                 "Client": {
                     "depends_on": "Server",
-                    "python_version": "3.6",
+                    "environment": {
+                        "python_version": "3.6.15",
+                        "pip_version": "21.3.1",
+                    },
                     "main_file": "main.py",
                     "requires_gpu": False,
                     "uses_gpu": False,
@@ -132,7 +135,10 @@ class ExperimentConfig(Config):
                 },
                 "Server": {
                     "depends_on": None,
-                    "python_version": "3.6",
+                    "environment": {
+                        "python_version": "3.6.15",
+                        "pip_version": "21.3.1",
+                    },
                     "main_file": "main.py",
                     "requires_gpu": False,
                     "uses_gpu": False,
@@ -253,11 +259,11 @@ class Experiment:
     name: str
     root: pathlib.Path
     main_config: ExperimentConfig
-    models: dict[str, pathlib.Path]
-    datasets: dict[str, pathlib.Path]
-    output: dict[str, pathlib.Path]
-    readme: pathlib.Path
-    node_types: dict[str, dict]
+    models: "dict[str, pathlib.Path]"
+    datasets: "dict[str, pathlib.Path]"
+    output: "dict[str, pathlib.Path]"
+    readme: "dict[str, pathlib.Path]"
+    node_types: "dict[str, dict]"
 
     def __init__(self, experiment_dir: pathlib.Path):
         # Catch bad input
@@ -306,7 +312,7 @@ class ExperimentManager:
     experiments, and edit the configuration of existing experiments.
     """
 
-    experiments: list[Experiment]
+    experiments: "list[Experiment]"
     experiment_dir: pathlib.Path
 
     def __init__(self, experiment_dir: pathlib.Path):
@@ -374,7 +380,7 @@ class ExperimentManager:
 
             # Add the .python-version file to the dir so pyenv can enforce
             # the correct python version
-            pversion = info["python_version"]
+            pversion = info.get("environment").get("python_version")
             subprocess.run(["pyenv", "install", "-s", pversion], cwd=ndir)
             subprocess.run(["pyenv", "local", pversion], cwd=ndir)
 
@@ -396,7 +402,7 @@ class ExperimentManager:
             # Remove the experiment from the collection
             self.experiments = [e for e in self.experiments if e.name != name]
 
-    def _get_exp_names(self) -> list[str]:
+    def _get_exp_names(self) -> "list[str]":
         return [e.name for e in self.experiments]
 
     def run_experiment(self, name, parameters):

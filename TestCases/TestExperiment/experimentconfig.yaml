@@ -13,7 +13,10 @@ nodes:
   types:
     Client:
       depends_on: Server
-      python_version: 3.8.3
+      environment:
+        python_version: 3.6.15
+        pip_version: 21.3.1
+      main_file: main.py
       requires_gpu: false
       uses_gpu: false
       supported_cpu_architectures:
@@ -24,7 +27,10 @@ nodes:
       grpc_port: 50051
     Server:
       depends_on: null
-      python_version: 3.8.3
+      environment:
+        python_version: 3.6.15
+        pip_version: 21.3.1
+      main_file: main.py
       requires_gpu: false
       uses_gpu: false
       supported_cpu_architectures:
