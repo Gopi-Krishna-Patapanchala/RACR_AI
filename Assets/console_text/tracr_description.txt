@@ -1,0 +1,1 @@
+A command line tool that makes it easy to conduct experiments in collaborative AI
