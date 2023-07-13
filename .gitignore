@@ -151,3 +151,6 @@ api/Docker_images/*.tar
 
 # Ignore steve's .vscode config folder
 .vscode
+
+# Ignore the tracr-venv directory (should be created locally to match system)
+tracr-venv

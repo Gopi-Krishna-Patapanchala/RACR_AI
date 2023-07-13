@@ -17,6 +17,15 @@ class DeviceUnavailableException(Exception):
         super().__init__(message)
 
 
+class DeviceNotSetupException(Exception):
+    """
+    Raised if a device is initialized without being setup.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
 class DeviceNameConflictException(Exception):
     """
     Raised if two devices are found with the same name.

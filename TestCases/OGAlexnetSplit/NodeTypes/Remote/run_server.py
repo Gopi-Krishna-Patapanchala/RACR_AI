@@ -1,4 +1,4 @@
-import src.src.colab_vision_server as cv
+import src.colab_vision_server as cv
 import sys
 
 if __name__ == "__main__":
