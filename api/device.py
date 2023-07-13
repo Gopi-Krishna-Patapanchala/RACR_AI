@@ -7,6 +7,7 @@ import logging
 from contextlib import contextmanager
 
 from api.exceptions import (
+    DeviceNotSetupException,
     DeviceUnavailableException,
     MalformedUUIDException,
     MissingSetupException,
@@ -67,7 +68,7 @@ class Device:
     """
 
     # the directory where configs are stored on remote devices
-    remote_configs_dir: pathlib.Path = pathlib.Path("~/.config/tracr/")
+    remote_configs_dir: pathlib.Path = pathlib.Path("~/.tracr/")
 
     host: str  # IP address or hostname of the device
     user: str  # username to use when connecting to the device
@@ -176,10 +177,10 @@ class Device:
 
         # check if the device has been set up, and do so if not
         if not self.is_setup():
-            logger.warning(
-                f"Device {name} is missing setup. " + "Attempting auto-setup sequence."
+            raise DeviceNotSetupException(
+                f"Device {name} is not set up. "
+                + "Please run `tracr device setup <NAME>` to set up the device."
             )
-            self._setup_remote()
 
         # if the device wasn't initialized with a true UUID, make it None
         if self.id.startswith("temp") or self.id == "":
@@ -322,17 +323,6 @@ class Device:
             If the device is not available.
         """
         return self._remote_path_exists(Device.remote_configs_dir)
-
-    def _setup_remote(self):
-        """
-        Sets up the device by creating the ~/.config/tracr directory.
-
-        Raises:
-        -------
-        DeviceUnavailableException
-            If the device is not available.
-        """
-        self._remote_mkdir(Device.remote_configs_dir)
 
     def _expanduser_remote(self, path: pathlib.Path) -> pathlib.Path:
         """

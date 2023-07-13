@@ -1,6 +1,6 @@
 import src.colab_vision_client as cv
 import atexit
-from test_data import test_data_loader as data_loader
+from src.test_data import test_data_loader as data_loader
 import sys
 
 if __name__ == "__main__":

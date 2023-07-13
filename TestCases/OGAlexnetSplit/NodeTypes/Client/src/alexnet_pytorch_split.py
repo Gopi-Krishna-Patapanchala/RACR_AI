@@ -7,7 +7,7 @@ import torch.nn as nn
 from torchvision import transforms, models
 import time
 import pandas as pd
-from test_data import test_data_loader as data_loader
+from . import test_data as td
 import atexit
 
 
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     m = Model(mode="cuda")
     atexit.register(m.safeClose)
     m.baseline_dict = {}
-    test_data = data_loader()
+    test_data = td.test_data_loader()
     i = 0
     for [data, filename] in test_data.image_list:
         t1 = time.time()

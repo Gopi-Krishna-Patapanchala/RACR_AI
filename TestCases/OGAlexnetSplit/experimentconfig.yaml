@@ -23,7 +23,7 @@ nodes:
 
     Client:
       environment:
-        python_version: 3.6.15
+        python_version: 3.8.17
         pip_version: 21.3.1
       depends_on: Remote
       main_file: run_client.py
@@ -39,7 +39,7 @@ nodes:
     Remote:
       depends_on: null
       environment:
-        python_version: 3.6.15
+        python_version: 3.8.17
         pip_version: 21.3.1
       main_file: run_server.py
       requires_gpu: false

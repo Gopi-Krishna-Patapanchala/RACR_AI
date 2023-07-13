@@ -1,14 +1,15 @@
-from data_wrapper import data_wrapper
-from PIL import Image
 import glob
 import pathlib
 import sys
+from PIL import Image
+
+from . import data_wrapper as dw
 
 
-test_img_dir = pathlib.Path(sys.path[0]) / "test"
+test_img_dir = pathlib.Path(sys.path[0]).parent.parent / "Datasets" / "test"
 
 
-class test_data_loader(data_wrapper):
+class test_data_loader(dw.data_wrapper):
     def __init__(self, img_directory=test_img_dir):
         self.image_list = []
         self.load_data(img_directory)
@@ -23,7 +24,7 @@ class test_data_loader(data_wrapper):
             [val, filename] = self.image_list.pop()
             print(
                 f'Testing on image "{pathlib.Path(filename).name}"'
-                + f"\t\t({len(self.image_list)} remaining)"
+                + f"\t({len(self.image_list)} remaining)"
             )
             for i in range(1, 21):
                 print(f"\tLayer {i} split test in process")
