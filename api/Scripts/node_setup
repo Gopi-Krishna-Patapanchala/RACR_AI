@@ -1,0 +1,148 @@
+#!/bin/bash
+
+# Usage: node_setup [-o, --overwrite] [-d, --debug] <Host> <experiment_name> <node_type> <python_version> <pip_version>
+
+# Exit codes (bitwise)
+# 1 (2^0): directory exists and overwrite is false
+# 2 (2^1): rsync failed
+# 4 (2^2): python installation failed
+# 8 (2^3): venv creation or activation failed
+# 16 (2^4): pip update failed
+# 32 (2^5): package installation failed
+
+overwrite=false
+debug=false
+
+while getopts "od" opt; do
+  case ${opt} in
+    o)
+      overwrite=true
+      ;;
+    d)
+      debug=true
+      ;;
+    \?)
+      echo "Invalid option: $OPTARG" 1>&2
+      ;;
+  esac
+done
+shift $((OPTIND -1))
+
+remote_host=$1
+experiment_name=$2
+node_type=$3
+python_version=$4
+pip_version=$5
+
+local_base_dir="$(dirname "$(realpath "$0")")/../../TestCases/$experiment_name/NodeTypes/${node_type}"
+remote_username="$(grep -A 3 "Host $remote_host" ~/.ssh/config | grep "User" | sed -e 's/ *User *//' -e 's/ *//')"
+remote_base_dir="/home/$remote_username/.tracr/experiments/$experiment_name/NodeTypes/${node_type}"
+
+if [ "$debug" = true ]
+then
+    echo "Local Base Dir: $local_base_dir"
+    echo "Remote Username: $remote_username"
+    echo "Remote Base Dir: $remote_base_dir"
+fi
+
+exit_code=0
+# Check if the base directory exists.
+ssh_output=$(ssh $remote_host "[ -d \"$remote_base_dir\" ]" 2>&1)
+if [ $? -eq 0 ]
+then
+  if [ "$overwrite" = false ]
+  then
+    exit_code=$((exit_code | 1))
+    if [ "$debug" = true ]
+    then
+      echo "Directory exists and overwrite is false: $ssh_output"
+    fi
+    exit $exit_code
+  else
+    ssh $remote_host "rm -rf \"$remote_base_dir\""
+  fi
+fi
+
+# Use rsync to copy the required files from the local directory to the remote directory.
+rsync_output=$(rsync -avz --mkpath --exclude="${node_type,,}-venv" "$local_base_dir/" "$remote_host:$remote_base_dir" 2>&1)
+if [ $? -ne 0 ]
+then
+  exit_code=$((exit_code | 2))
+  if [ "$debug" = true ]
+  then
+    echo "Rsync failed: $rsync_output"
+  fi
+  exit $exit_code
+fi
+
+ssh $remote_host <<EOF
+cd "$remote_base_dir"
+
+# Check if the desired Python version is installed. If not, install it.
+pyenv_output=\$(pyenv install -s $python_version 2>&1)
+if [ \$? -ne 0 ]
+then
+  exit_code=\$((exit_code | 4))
+  if [ "$debug" = true ]
+  then
+    echo "Python installation failed: \$pyenv_output"
+  fi
+fi
+
+# Set the local Python version to the desired version.
+pyenv_local_output=\$(pyenv local $python_version 2>&1)
+if [ \$? -ne 0 ]
+then
+  exit_code=\$((exit_code | 4))
+  if [ "$debug" = true ]
+  then
+    echo "Setting local Python version failed: \$pyenv_local_output"
+  fi
+fi
+
+# Create a new virtual environment
+venv_output=\$(python -m venv "${node_type,,}-venv")
+if [ \$? -ne 0 ]
+then
+  exit_code=\$((exit_code | 8))
+  if [ "$debug" = true ]
+  then
+    echo "Creating venv failed: \$venv_output"
+  fi
+fi
+
+# and activate it
+activate_output=\$(source "${node_type,,}-venv/bin/activate" 2>&1)
+if [ \$? -ne 0 ]
+then
+  exit_code=\$((exit_code | 8))
+  if [ "$debug" = true ]
+  then
+    echo "Activating venv failed: \$activate_output"
+  fi
+fi
+
+# Update pip to the specified version.
+pip_output=\$(source "${node_type,,}-venv/bin/activate" && pip install --upgrade pip==$pip_version 2>&1)
+if [ \$? -ne 0 ]
+then
+  exit_code=\$((exit_code | 16))
+  if [ "$debug" = true ]
+  then
+    echo "Pip upgrade failed: \$pip_output"
+  fi
+fi
+
+# Install the packages specified in requirements.txt.
+pip_install_output=\$(source "${node_type,,}-venv/bin/activate" && pip install -r requirements.txt 2>&1)
+if [ \$? -ne 0 ]
+then
+  exit_code=\$((exit_code | 32))
+  if [ "$debug" = true ]
+  then
+    echo "Package installation failed: \$pip_install_output"
+  fi
+fi
+
+exit \$exit_code
+EOF
