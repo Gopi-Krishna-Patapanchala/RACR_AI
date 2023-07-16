@@ -1,0 +1,192 @@
+#!/bin/bash
+
+# Usage: check_node [-r, --remote <Host>] [-d, --debug] <experiment_name> <node_type> <python_version> <pip_version> <main_script_name>
+
+# Exit codes (bitwise)
+# 1 (2^0): base directory not found
+# 2 (2^1): .python-version file not found
+# 4 (2^2): requirements.txt file not found
+# 8 (2^3): main script file not found
+# 16 (2^4): src directory not found
+# 32 (2^5): venv directory not found or venv activation failed
+# 64 (2^6): python version mismatch
+# 128 (2^7): package in requirements.txt not installed
+
+# Parse the input parameters and set local or remote path based on -r flag.
+debug_mode=0
+while getopts "r:d" opt; do
+  case ${opt} in
+    r)
+      remote_host=$OPTARG
+      ;;
+    d)
+      debug_mode=1
+      ;;
+    \?)
+      echo "Invalid option: $OPTARG" 1>&2
+      ;;
+  esac
+done
+shift $((OPTIND -1))
+
+experiment_name=$1
+node_type=$2
+python_version=$3
+pip_version=$4
+main_script_name=$5
+
+if [ -n "$remote_host" ]; then
+  ssh $remote_host <<EOF
+  base_dir="/home/\$USER/.tracr/experiments/$experiment_name/NodeTypes/${node_type}"
+
+  exit_code=0
+  # Check if base directory exists
+  if [ ! -d "\$base_dir" ]; then
+    exit_code=511
+    [ $debug_mode -eq 1 ] && echo "Base directory not found. Checking in directory: \$base_dir"
+  else
+    cd "\$base_dir"
+  
+    # Check if .python-version, requirements.txt, main script file, src directory, and venv directory exist
+    if [ ! -f ".python-version" ]; then
+      exit_code=\$((exit_code | 2))
+      [ $debug_mode -eq 1 ] && echo ".python-version file not found. Checking in directory: \$base_dir"
+    fi
+    if [ ! -f "requirements.txt" ]; then
+      exit_code=\$((exit_code | 4))
+      [ $debug_mode -eq 1 ] && echo "requirements.txt file not found. Checking in directory: \$base_dir"
+    fi
+    if [ ! -f "$main_script_name" ]; then
+      exit_code=\$((exit_code | 8))
+      [ $debug_mode -eq 1 ] && echo "Main script file not found. Checking in directory: \$base_dir"
+    fi
+    if [ ! -d "src" ]; then
+      exit_code=\$((exit_code | 16))
+      [ $debug_mode -eq 1 ] && echo "src directory not found. Checking in directory: \$base_dir"
+    fi
+
+    # Attempt to activate venv
+    source "${node_type,,}-venv/bin/activate"
+    if [ \$? -ne 0 ]; then
+      exit_code=\$((exit_code | 32))
+      [ $debug_mode -eq 1 ] && echo "Failed to activate venv or venv directory not found. Checking in directory: \$base_dir"
+    fi
+
+    # Check if Python version matches
+    if [ "\$(python --version 2>&1 | sed -E 's/[^0-9.]//g')" != "$python_version" ]; then
+      exit_code=\$((exit_code | 64))
+      [ $debug_mode -eq 1 ] && echo "Python version mismatch. Checking in directory: \$base_dir"
+    fi
+
+	# Check if all the packages in requirements.txt are installed
+	while IFS= read -r line
+	do
+	if [[ \$line == *"=="* ]]
+	then
+		package=\$(echo \$line | cut -d'=' -f1)
+		version=\$(echo \$line | cut -d'=' -f3)
+	else
+		package=\$line
+		version=0
+	fi
+
+	installed_version=\$(pip list | grep -w \$package | awk '{print \$2}')
+
+	if [ -z "\$installed_version" ]
+	then
+		if [ $debug_mode -eq 1 ]; then
+		echo "Package '\$package' is not installed. Adding error code 128."
+		fi
+		exit_code=\$((exit_code | 128))
+	else
+		if [ "\$version" != "0" ] && [[ ! \$installed_version == \$version* ]]
+		then
+		if [ $debug_mode -eq 1 ]; then
+			echo "Package '\$package' version mismatch. Found: \$installed_version. Expected: \$version. Adding error code 128."
+		fi
+		exit_code=\$((exit_code | 128))
+		fi
+	fi
+	done < "requirements.txt"
+  fi
+
+  exit \$exit_code
+EOF
+
+else
+  base_dir="$(dirname "$(realpath "$0")")/../../TestCases/$experiment_name/NodeTypes/${node_type}"
+
+  exit_code=0
+  # Check if base directory exists
+  if [ ! -d "$base_dir" ]; then
+    exit_code=$((exit_code | 1))
+    [ $debug_mode -eq 1 ] && echo "Base directory not found. Checking in directory: $base_dir"
+  else
+    cd "$base_dir"
+    
+    # Check if .python-version, requirements.txt, main script file, src directory, and venv directory exist
+    if [ ! -f ".python-version" ]; then
+      exit_code=$((exit_code | 2))
+      [ $debug_mode -eq 1 ] && echo ".python-version file not found. Checking in directory: $base_dir"
+    fi
+    if [ ! -f "requirements.txt" ]; then
+      exit_code=$((exit_code | 4))
+      [ $debug_mode -eq 1 ] && echo "requirements.txt file not found. Checking in directory: $base_dir"
+    fi
+    if [ ! -f "$main_script_name" ]; then
+      exit_code=$((exit_code | 8))
+      [ $debug_mode -eq 1 ] && echo "Main script file not found. Checking in directory: $base_dir"
+    fi
+    if [ ! -d "src" ]; then
+      exit_code=$((exit_code | 16))
+      [ $debug_mode -eq 1 ] && echo "src directory not found. Checking in directory: $base_dir"
+    fi
+
+    # Attempt to activate venv
+    source "${node_type,,}-venv/bin/activate"
+    if [ $? -ne 0 ]; then
+      exit_code=$((exit_code | 32))
+      [ $debug_mode -eq 1 ] && echo "Failed to activate venv or venv directory not found. Checking in directory: $base_dir"
+    fi
+
+    # Check if Python version matches
+    if [ "$(python --version 2>&1 | sed -E 's/[^0-9.]//g')" != "$python_version" ]; then
+      exit_code=$((exit_code | 64))
+      [ $debug_mode -eq 1 ] && echo "Python version mismatch. Checking in directory: $base_dir"
+    fi
+
+	# Check if all the packages in requirements.txt are installed
+	while IFS= read -r line
+	do
+	if [[ $line == *"=="* ]]
+	then
+		package=$(echo $line | cut -d'=' -f1)
+		version=$(echo $line | cut -d'=' -f3)
+	else
+		package=$line
+		version=0
+	fi
+
+	installed_version=$(pip list | grep -w $package | awk '{print $2}')
+
+	if [ -z "$installed_version" ]
+	then
+		if [ $debug_mode -eq 1 ]; then
+		echo "Package '$package' is not installed. Adding error code 128."
+		fi
+		exit_code=$((exit_code | 128))
+	else
+		if [ "$version" != "0" ] && [[ ! $installed_version == $version* ]]
+		then
+		if [ $debug_mode -eq 1 ]; then
+			echo "Package '$package' version mismatch. Found: $installed_version. Expected: $version. Adding error code 128."
+		fi
+		exit_code=$((exit_code | 128))
+		fi
+	fi
+	done < "requirements.txt"
+
+  fi
+
+  exit $exit_code
+fi

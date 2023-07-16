@@ -1,0 +1,316 @@
+#!/bin/bash
+
+# Exit Code Bit Assignment:
+# The exit code of this script is composed of 8 bits, with each bit representing a group of operations:
+# - Bit 0 (1): User 'tracr' creation and setup OR uninstall error if -u is invoked
+# - Bit 1 (2): Installing pyenv and tracr system dependencies
+# - Bit 2 (4): SSH configuration for tracr user
+# - Bit 3 (8): Installing pyenv
+# - Bit 4 (16): Adding shell configuration for pyenv
+# - Bit 5 (32): Creating directories for tracr data
+# - Bit 6 (64): Python installation
+# - Bit 7 (128): Python package installation
+# If an operation fails, the corresponding bit in the exit code will be set to 1. Thus, the exit code can be used to determine
+# which operations failed during the execution of the script. For example, an exit code of 129 (10000001 in binary) means that 
+# both the user 'tracr' creation/password setting and directory creation in user's home failed.
+
+# Initialize exit code to 0
+exit_code=0
+
+# Function to delete the 'tracr' user and its home directory
+function uninstall {
+    echo "Removing 'tracr' user and its associated data..."
+    if ! output=$(sudo killall -u tracr 2>&1); then
+        echo "Failed to kill processes owned by 'tracr'."
+        exit_code=$(($exit_code | 1))  # Set bit 0
+    fi
+    if ! output=$(sudo deluser --remove-home tracr 2>&1); then
+        echo "Failed to remove 'tracr' user: $output"
+        exit_code=$(($exit_code | 1))  # Set bit 0
+    fi
+    if ! output=$(sudo rm /etc/sudoers.d/tracr 2>&1); then
+        echo "Failed to remove sudoers file for 'tracr' user: $output"
+        exit_code=$(($exit_code | 1))  # Set bit 0
+    fi
+    echo "User 'tracr' and its associated data have been deleted."
+    exit $exit_code
+}
+
+# Check if -u flag is passed
+while getopts u flag
+do
+    case "${flag}" in
+        u) uninstall;;
+    esac
+done
+
+# Create user "tracr" and prompt for password
+echo ""
+echo "----------------------------"
+echo "Creating new user 'tracr'..."
+echo "----------------------------"
+echo ""
+if ! output=$(sudo adduser tracr --gecos "" --disabled-password 2>&1); then
+    echo "Failed to add user 'tracr': $output"
+    exit_code=$(($exit_code | 1))  # Set bit 0
+fi
+if ! output=$(echo "tracr:tracr" | sudo chpasswd 2>&1); then
+    echo "Failed to set password for 'tracr': $output"
+    exit_code=$(($exit_code | 1))  # Set bit 0
+fi
+echo "User 'tracr' has been created."
+
+# Give the user sudo permissions without password
+echo ""
+echo "---------------------------------------"
+echo "Giving 'tracr' user sudo permissions..."
+echo "---------------------------------------"
+echo ""
+if ! output=$(echo "tracr ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/tracr 2>&1); then
+    echo "Failed to give 'tracr' sudo permissions: $output"
+    exit_code=$(($exit_code | 1))  # Set bit 0
+else
+    echo ""
+    echo "$output"
+    echo ""
+fi
+echo "User 'tracr' can use sudo without password."
+
+# Create a safe tempfile to propogate exit code updates to outer shell
+temp_dir="$HOME/.tracr/tmp"
+sudo mkdir -p "$temp_dir"
+temp_fp="$temp_dir/ecode-setup-participant"
+sudo touch $temp_fp
+sudo chmod 777 $temp_fp
+
+# Switch to 'tracr' user and install pyenv
+sudo su - tracr <<EOF
+
+# Get exit code from outer shell
+exit_code=$exit_code
+# Install dependencies for pyenv
+echo ""
+echo "------------------------------------"
+echo "Installing dependencies for pyenv..."
+echo "------------------------------------"
+echo ""
+if ! output=\$(sudo apt-get update -y && sudo apt-get upgrade -y 2>&1); then
+    echo "Failed to update and upgrade packages: \$output"
+    exit_code=\$((\$exit_code | 2))  # Set bit 1
+else
+    echo ""
+echo "\$output"
+echo ""
+fi
+if ! output=\$(sudo apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev 2>&1); then
+    echo "Failed to install pyenv dependencies: \$output"
+    exit_code=\$((\$exit_code | 2))  # Set bit 1
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done."
+
+# Install uuid-runtime
+echo ""
+echo "----------------------------------"
+echo "Installing uuid-runtime library..."
+echo "----------------------------------"
+echo ""
+if ! output=\$(sudo apt-get install -y uuid-runtime 2>&1); then
+    echo "Failed to install uuid-runtime: \$output"
+    exit_code=\$((\$exit_code | 2))  # Set bit 1
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done."
+
+# SSH setup
+echo ""
+echo "-------------------------------------------------"
+echo "Ensuring 'tracr' account is accessible via SSH..."
+echo "-------------------------------------------------"
+echo ""
+if ! output=\$(sudo systemctl enable ssh 2>&1); then
+    echo "Failed to enable SSH: \$output"
+    exit_code=\$((\$exit_code | 4))  # Set bit 2
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+if ! output=\$(sudo systemctl start ssh 2>&1); then
+    echo "Failed to start SSH: \$output"
+    exit_code=\$((\$exit_code | 4))  # Set bit 2
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done."
+
+# Install pyenv
+echo ""
+echo "-------------------"
+echo "Installing pyenv..."
+echo "-------------------"
+echo ""
+if ! output=\$(curl -L https://pyenv.run | bash 2>&1); then
+    echo "Failed to install pyenv: \$output"
+    exit_code=\$((\$exit_code | 8))  # Set bit 3
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done."
+
+# Add required lines to .bashrc
+echo ""
+echo "--------------------------------------------------------"
+echo "Adding pyenv settings to 'tracr' user's shell configs..."
+echo "--------------------------------------------------------"
+echo ""
+if ! output=\$(echo 'export PYENV_ROOT="\$HOME/.pyenv"' >> ~/.bashrc); then
+    echo "Failed to add PYENV_ROOT to .bashrc: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
+if ! output=\$(echo 'command -v pyenv >/dev/null || export PATH="\$PYENV_ROOT/bin:\$PATH"' >> ~/.bashrc); then
+    echo "Failed to add pyenv to PATH in .bashrc: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
+if ! output=\$(echo 'eval "\$(pyenv init -)"' >> ~/.bashrc); then
+    echo "Failed to initialize pyenv in .bashrc: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
+
+# Check for existence of profile files and select the first one available
+if [ -e ~/.profile ]; then
+    profile=~/.profile
+elif [ -e ~/.bash_profile ]; then
+    profile=~/.bash_profile
+elif [ -e ~/.bash_login ]; then
+    profile=~/.bash_login
+else
+    # If none exist, touch ~/.profile and save that filepath
+    touch ~/.profile
+    profile=~/.profile
+fi
+
+# Add required lines to selected profile file
+if ! output=\$(echo 'export PYENV_ROOT="\$HOME/.pyenv"' >> \$profile); then
+    echo "Failed to add PYENV_ROOT to \$profile: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
+if ! output=\$(echo 'command -v pyenv >/dev/null || export PATH="\$PYENV_ROOT/bin:\$PATH"' >> \$profile); then
+    echo "Failed to add pyenv to PATH in \$profile: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
+if ! output=\$(echo 'eval "\$(pyenv init -)"' >> \$profile); then
+    echo "Failed to initialize pyenv in \$profile: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
+echo "Done."
+
+# Create directories in user's home
+echo ""
+echo "----------------------------------------"
+echo "Creating directories for 'tracr' user..."
+echo "----------------------------------------"
+echo ""
+if ! output=\$(mkdir -p ~/.tracr/experiments ~/.tracr/device_info 2>&1); then
+    echo "Failed to create directories: \$output"
+    exit_code=\$((\$exit_code | 32))  # Set bit 5
+fi
+echo "Done."
+
+# Workaround to propogate exit code to outer shell
+sudo echo \$exit_code > "$temp_fp"
+
+EOF
+
+# Get exit code from temp file
+exit_code=$(cat $temp_fp)
+
+# Run the rest of the script as 'tracr'
+sudo -H -u tracr bash -l - <<EOF
+
+# Get exit code from parent shell
+exit_code=$exit_code
+
+# Install python 3.8.17 using pyenv and set it as global version
+echo ""
+echo "--------------------------------------"
+echo "Installing Python 3.8.17 with pyenv..."
+echo "--------------------------------------"
+echo ""
+export PYENV_ROOT="\$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="\$PYENV_ROOT/bin:\$PATH"
+eval "\$(pyenv init -)"
+if ! output=\$(pyenv install -s 3.8.17); then
+    echo "Failed to install Python 3.8.17: \$output"
+    exit_code=\$((\$exit_code | 64))  # Set bit 6
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+if ! output=\$(pyenv global 3.8.17); then
+    echo "Failed to set Python 3.8.17 as global version: \$output"
+    exit_code=\$((\$exit_code | 64))  # Set bit 6
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done installing Python 3.8.17."
+
+# Upgrade pip
+echo ""
+echo "--------------------------"
+echo "Upgrading pip to latest..."
+echo "--------------------------"
+echo ""
+if ! output=\$(pip install --upgrade pip); then
+    echo "Failed to upgrade pip: \$output"
+    exit_code=\$((\$exit_code | 128))  # Set bit 7
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done upgrading pip."
+
+# Ensure venv is installed
+echo ""
+echo "-----------------------------"
+echo "Ensuring venv is installed..."
+echo "-----------------------------"
+echo ""
+if ! output=\$(pip install virtualenv); then
+    echo "Failed to install virtualenv: \$output"
+    exit_code=\$((\$exit_code | 128))  # Set bit 7
+else
+    echo ""
+    echo "\$output"
+    echo ""
+fi
+echo "Done."
+
+# Workaround to propogate exit code to outer shell
+sudo echo \$exit_code > "$temp_fp"
+
+EOF
+
+# Get exit code from temp file and delete
+exit_code=$(cat $temp_fp)
+sudo rm $temp_fp
+
+# Check for errors and return appropriate exit code
+if [[ $exit_code -ne 0 ]]; then
+    echo "There were errors during execution. Exit code: $exit_code"
+fi
+exit $exit_code
