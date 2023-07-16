@@ -122,9 +122,10 @@ class ExperimentConfig(Config):
                 "Client": {
                     "depends_on": "Server",
                     "environment": {
-                        "python_version": "3.6.15",
+                        "python_version": "3.8.17",
                         "pip_version": "21.3.1",
                     },
+                    "accepted_args": [],
                     "main_file": "main.py",
                     "requires_gpu": False,
                     "uses_gpu": False,
@@ -136,9 +137,10 @@ class ExperimentConfig(Config):
                 "Server": {
                     "depends_on": None,
                     "environment": {
-                        "python_version": "3.6.15",
+                        "python_version": "3.8.17",
                         "pip_version": "21.3.1",
                     },
+                    "accepted_args": [],
                     "main_file": "main.py",
                     "requires_gpu": False,
                     "uses_gpu": False,
@@ -150,7 +152,7 @@ class ExperimentConfig(Config):
             },
         },
         "runtime": {
-            "run_command_parameters": ["NUM_CLIENTS", "SPLIT_LAYER"],
+            "experiment_level_parameters": [],
         },
     }
     default_filename = "experimentconfig.yaml"
@@ -192,7 +194,7 @@ class Experiment:
         │   │   │   ├── module1.py
         │   │   │   └── module2.py
         │   │   ├── requirements.txt
-        │   │   ├── venv/
+        │   │   ├── type1-venv/
         │   │   ├── .python-version
         │   └── Type2/
         │       └── ...
@@ -301,8 +303,20 @@ class Experiment:
         # experiment config
         self.node_types = self.main_config.getval("nodes", "types")
 
-    def run(self, parameters):
-        pass  # Implement experiment running
+    def run(self, **parameters):
+        # parse params
+        if "run_local" in parameters:
+            run_local = bool(parameters["run_local"])
+
+        # if run_local is true, run the experiment locally
+        if run_local:
+            pass
+
+
+class Launcher:
+    """
+    The Launcher class
+    """
 
 
 class ExperimentManager:

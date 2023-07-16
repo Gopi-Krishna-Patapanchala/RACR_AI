@@ -68,7 +68,7 @@ class Device:
     """
 
     # the directory where configs are stored on remote devices
-    remote_configs_dir: pathlib.Path = pathlib.Path("~/.tracr/")
+    remote_configs_dir: pathlib.Path = pathlib.Path("~/.tracr/device_info")
 
     host: str  # IP address or hostname of the device
     user: str  # username to use when connecting to the device
@@ -613,7 +613,17 @@ class DeviceManager:
     """
 
     # the path to the controller's config file directory
-    config_dir = pathlib.Path("~/.config/tracr").expanduser()
+    config_dir = pathlib.Path("~/.tracr").expanduser()
+
+    @classmethod
+    def setup_controller(cls):
+        """
+        Sets up the controller device by creating a data subdirectory in the
+        user's home directory.
+        """
+        cls.config_dir.mkdir(exist_ok=True)
+        with open(cls.config_dir / "known_devices.json", "w") as file:
+            json.dump({}, file)
 
     def __init__(self):
         self.devices = []
@@ -646,7 +656,10 @@ class DeviceManager:
                 f"No file found at {self.known_device_filepath}. "
                 + "Has this device been set up?"
             )
-        return None
+            raise MissingSetupException(
+                f"No file found at {self.known_device_filepath}. "
+                + " To set up the controller, use `tracr setup`."
+            )
 
     def add_device(self, name: str):
         """
@@ -771,10 +784,19 @@ class DeviceManager:
         from the file at ~/.config/tracr/known_devices.json.
         """
         device_data = self.get_known_devices()
-        self.devices = [
-            Device(d["name"], self.ssh_config.lookup(d["name"]), id=d["id"])
-            for d in device_data
-        ]
+
+        for d in device_data:
+            try:
+                device = Device(
+                    d["name"], self.ssh_config.lookup(d["name"]), id=d["id"]
+                )
+                self.devices.append(device)
+            except DeviceNotSetupException:
+                logger.warning(
+                    f"Device {d['name']} not set up. "
+                    + "Use `tracr device setup <NAME>` to set up this device."
+                )
+                continue
 
     def save_devices(self):
         """
@@ -795,27 +817,26 @@ class DeviceManager:
 
 
 if __name__ == "__main__":
+    # check controller setup
+    if not (DeviceManager.config_dir / "known_devices.json").exists():
+        DeviceManager.setup_controller()
+
     # check DeviceManager and Device instantiation
     dm = DeviceManager()
 
     # check reading known_devices.json, device filtering, adding, and removing,
     # then saving to known_devices.json, as well as both connection methods
-    if dm.get_devices_by(name="home-pi-steve"):
-        dm.remove_device("home-pi-steve")
-        dm.add_device("home-pi-test")
-    elif dm.get_devices_by(name="home-pi-test"):
-        dm.remove_device("home-pi-test")
-        dm.add_device("home-pi-steve")
+    if dm.get_devices_by(name="home-pi-tracr"):
+        dm.add_device("home-pi-tracr")
     else:
-        dm.add_device("home-pi-steve")
+        dm.remove_device("home-pi-tracr")
 
     # check multi-parameter filtering
-    if not dm.get_devices_by(name="home-pi-steve"):
-        dm.remove_device("home-pi-test")
-        dm.add_device("home-pi-steve")
+    if not dm.get_devices_by(name="home-pi-tracr"):
+        dm.add_device("home-pi-tracr")
     assert (
-        dm.get_devices_by(name="home-pi-steve", is_available=True)[0].name
-        == "home-pi-steve"
+        dm.get_devices_by(name="home-pi-tracr", is_available=True)[0].name
+        == "home-pi-tracr"
     )
 
     for device in dm.devices:

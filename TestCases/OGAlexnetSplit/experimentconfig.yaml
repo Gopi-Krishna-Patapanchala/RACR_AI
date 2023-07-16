@@ -24,7 +24,7 @@ nodes:
     Client:
       environment:
         python_version: 3.8.17
-        pip_version: 21.3.1
+        pip_version: 23.1.2
       depends_on: Remote
       main_file: run_client.py
       requires_gpu: false
@@ -40,10 +40,10 @@ nodes:
       depends_on: null
       environment:
         python_version: 3.8.17
-        pip_version: 21.3.1
+        pip_version: 23.1.2
       main_file: run_server.py
       requires_gpu: false
-      uses_gpu: false
+      uses_gpu: true
       supported_cpu_architectures:
       - x86_64
       - arm64

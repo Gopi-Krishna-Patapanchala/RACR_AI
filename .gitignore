@@ -154,3 +154,6 @@ api/Docker_images/*.tar
 
 # Ignore the tracr-venv directory (should be created locally to match system)
 tracr-venv
+
+# Ignore the cmake3.26 buildkit in Assets
+Assets/cmake-3.26.4.tar.gz

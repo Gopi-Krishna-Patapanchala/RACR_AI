@@ -26,6 +26,15 @@ class DeviceNotSetupException(Exception):
         super().__init__(message)
 
 
+class ControllerNotSetupException(Exception):
+    """
+    Raised if the controller is initialized without being setup.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
 class DeviceNameConflictException(Exception):
     """
     Raised if two devices are found with the same name.
