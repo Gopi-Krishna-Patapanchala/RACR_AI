@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Constants
+USERNAME="tracr"
+
+# Check arguments
+if [ $# -ne 2 ]; then
+    echo "Usage: $0 <DEVICE_NICKNAME> <HOSTNAME_OR_IP>"
+    exit 1
+fi
+
+DEVICE_NICKNAME=$1
+HOSTNAME_OR_IP=$2
+KEYNAME=~/.ssh/$DEVICE_NICKNAME
+
+# Generate the SSH key pair
+if [ ! -f "$KEYNAME" ]; then
+    echo "Generating SSH key pair..."
+    ssh-keygen -t rsa -f $KEYNAME
+else
+    echo "SSH key pair already exists. Skipping generation."
+fi
+
+# Install the public key on the server
+echo "Installing public key on remote server..."
+SSH_AUTH_SOCK='' ssh-copy-id -i $KEYNAME.pub $USERNAME@$HOSTNAME_OR_IP
+if [ $? -ne 0 ]; then
+    echo "Failed to copy public key to remote server"
+    exit 1
+fi
+
+# Add an entry to the ssh config file
+CONFIG_LINE="Host $DEVICE_NICKNAME"
+if ! grep -qF "$CONFIG_LINE" ~/.ssh/config; then
+    echo "Adding entry to SSH config file..."
+    echo -e "\n# Entry for $DEVICE_NICKNAME" >> ~/.ssh/config
+    echo "Host $DEVICE_NICKNAME" >> ~/.ssh/config
+    echo "  Hostname $HOSTNAME_OR_IP" >> ~/.ssh/config
+    echo "  User $USERNAME" >> ~/.ssh/config
+    echo "  IdentityFile $KEYNAME" >> ~/.ssh/config
+else
+    echo "Entry already exists in SSH config file. Skipping addition."
+fi
+
+echo ""
+echo "-----------------------------------------------------------------------------------"
+echo "SSH Key creation and copy process complete."
+echo "You should now be able to log in to the remote server without a password like this:"
+echo "                             ssh $DEVICE_NICKNAME"
+echo "-----------------------------------------------------------------------------------"
+echo ""
+exit 0

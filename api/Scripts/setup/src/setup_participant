@@ -102,24 +102,8 @@ else
 echo "\$output"
 echo ""
 fi
-if ! output=\$(sudo apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev 2>&1); then
+if ! output=\$(sudo apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev git 2>&1); then
     echo "Failed to install pyenv dependencies: \$output"
-    exit_code=\$((\$exit_code | 2))  # Set bit 1
-else
-    echo ""
-    echo "\$output"
-    echo ""
-fi
-echo "Done."
-
-# Install uuid-runtime
-echo ""
-echo "----------------------------------"
-echo "Installing uuid-runtime library..."
-echo "----------------------------------"
-echo ""
-if ! output=\$(sudo apt-get install -y uuid-runtime 2>&1); then
-    echo "Failed to install uuid-runtime: \$output"
     exit_code=\$((\$exit_code | 2))  # Set bit 1
 else
     echo ""
@@ -186,6 +170,10 @@ if ! output=\$(echo 'eval "\$(pyenv init -)"' >> ~/.bashrc); then
     echo "Failed to initialize pyenv in .bashrc: \$output"
     exit_code=\$((\$exit_code | 16))  # Set bit 4
 fi
+if ! output=\$(echo 'eval "\$(pyenv virtualenv-init -)"' >> ~/.bashrc); then
+    echo "Failed to initialize pyenv-virtualenv in .bashrc: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
 
 # Check for existence of profile files and select the first one available
 if [ -e ~/.profile ]; then
@@ -213,6 +201,10 @@ if ! output=\$(echo 'eval "\$(pyenv init -)"' >> \$profile); then
     echo "Failed to initialize pyenv in \$profile: \$output"
     exit_code=\$((\$exit_code | 16))  # Set bit 4
 fi
+if ! output=\$(echo 'eval "\$(pyenv virtualenv-init -)"' >> \$profile); then
+    echo "Failed to initialize pyenv-virtualenv in \$profile: \$output"
+    exit_code=\$((\$exit_code | 16))  # Set bit 4
+fi
 echo "Done."
 
 # Create directories in user's home
@@ -227,6 +219,16 @@ if ! output=\$(mkdir -p ~/.tracr/experiments ~/.tracr/device_info 2>&1); then
 fi
 echo "Done."
 
+# Create my_uuid.txt file
+echo ""
+echo "---------------------------------------------"
+echo "Creating my_uuid.txt file for 'tracr' user..."
+echo "---------------------------------------------"
+echo ""
+if ! output=\$(uuidgen > ~/.tracr/my_uuid.txt 2>&1); then
+    echo "Failed to create my_uuid.txt file: \$output"
+    exit_code=\$((\$exit_code | 32))  # Set bit 5
+fi
 # Workaround to propogate exit code to outer shell
 sudo echo \$exit_code > "$temp_fp"
 
