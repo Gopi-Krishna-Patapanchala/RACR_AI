@@ -1,0 +1,99 @@
+#!/bin/bash
+
+# Not meant to be run on the local machine - there is a wrapper script that executes
+# this script on a remote device on the LAN using SSH.
+#
+# - Bit 0 (1): User 'tracr' creation and setup OR uninstall error if -u is invoked
+# - Bit 1 (2): Installing pyenv and tracr system dependencies
+# - Bit 2 (4): SSH configuration for tracr user
+# - Bit 3 (8): Installing pyenv
+# - Bit 4 (16): Adding shell configuration for pyenv
+# - Bit 5 (32): Creating directories for tracr data
+# - Bit 6 (64): Python installation
+# - Bit 7 (128): Python package installation
+
+exit_code=0
+
+# Define the check names for pretty print at the end
+declare -A check_names
+check_names=( [1]="tracr_user_configured" [2]="build_dependencies_installed" [3]="SSH_configured" [4]="pyenv_installed" [5]="pyenv_bash_configs" [6]="~/.tracr__directory_setup" [7]="python_installed" [8]="python_packages_installed" )
+
+# Check user "tracr"
+if ! id -u tracr >/dev/null 2>&1; then
+    echo "User 'tracr' does not exist."
+    exit_code=$(($exit_code | 1))  # Set bit 0
+fi
+
+# Check sudoers file for 'tracr'
+if ! sudo grep -q "^tracr ALL=(ALL) NOPASSWD: ALL" /etc/sudoers.d/tracr 2>/dev/null; then
+    echo "'tracr' user does not have passwordless sudo permissions."
+    exit_code=$(($exit_code | 1))  # Set bit 0
+fi
+
+# Check pyenv and dependencies installation
+if ! dpkg -l build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev git uuid-runtime >/dev/null 2>&1; then
+    echo "Dependencies for pyenv are not installed."
+    exit_code=$(($exit_code | 2))  # Set bit 1
+fi
+
+# Check SSH service
+if ! systemctl is-active --quiet ssh; then
+    echo "SSH is not running."
+    exit_code=$(($exit_code | 4))  # Set bit 2
+fi
+
+# Check pyenv installation
+if ! sudo -u tracr -i bash -c 'type pyenv >/dev/null 2>&1'; then
+    echo "pyenv is not installed for 'tracr' user."
+    exit_code=$(($exit_code | 8))  # Set bit 3
+fi
+
+# Check .bashrc configuration for pyenv
+if ! sudo -u tracr -i grep -q 'export PYENV_ROOT=' /home/tracr/.bashrc 2>/dev/null; then
+    echo "Shell configuration for pyenv is not added to .bashrc."
+    exit_code=$(($exit_code | 16))  # Set bit 4
+fi
+
+# Check home directory for properly configured .tracr directory
+if [ ! -d "/home/tracr/.tracr/experiments" ] || [ ! -d "/home/tracr/.tracr/device_info" ]; then
+    echo "Directories for 'tracr' user are not created."
+    exit_code=$(($exit_code | 32))  # Set bit 5
+
+elif [ $(stat -c %a "/home/tracr/.tracr") -ne 777 ] || [ $(stat -c %a "/home/tracr/.tracr/experiments") -ne 777 ] || [ $(stat -c %a "/home/tracr/.tracr/experiments") -ne 777 ]; then
+    echo "Directories for 'tracr' user have wrong permissions."
+    exit_code=$(($exit_code | 32))  # Set bit 5
+fi
+
+# Check Python installation
+if ! sudo -u tracr -i bash -c 'pyenv versions --bare | grep -q 3.8.17'; then
+    echo "Python 3.8.17 is not installed."
+    exit_code=$(($exit_code | 64))  # Set bit 6
+fi
+
+# Check pip installation
+if ! sudo -u tracr -i bash -c 'pip --version >/dev/null 2>&1'; then
+    echo "pip is not installed."
+    exit_code=$(($exit_code | 128))  # Set bit 7
+fi
+
+# Check for venv installation
+if ! sudo -u tracr -i bash -c 'pip list | grep virtualenv >/dev/null 2>&1'; then
+    echo "virtualenv is not installed."
+    exit_code=$(($exit_code | 128))  # Set bit 7
+fi
+
+# Check for errors and return appropriate exit code
+if [[ $exit_code -ne 0 ]]; then
+    echo "There were errors during validation. Exit code: $exit_code"
+fi
+
+for i in {1..7}
+do
+    if (( (exit_code & (1 << ($i - 1))) != 0 )); then
+        echo "${check_names[$i]}: Failed"
+    else
+        echo "${check_names[$i]}: Passed"
+    fi
+done
+
+exit $exit_code

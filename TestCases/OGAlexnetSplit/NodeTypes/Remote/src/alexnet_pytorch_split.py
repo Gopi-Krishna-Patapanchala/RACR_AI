@@ -3,6 +3,7 @@ import sys
 import numpy as np
 from PIL import Image
 import torch
+from pathlib import Path
 import torch.nn as nn
 from torchvision import transforms, models
 import time
@@ -110,8 +111,9 @@ class Model:
         else:
             print("Loading Model to CPU.")
         model.to(self.mode)
-        with open(str(imgnet_classes_fp), "r") as f:
-            self.categories = [s.strip() for s in f.readlines()]
+        self.categories = [
+            s.stem for s in Path(imgnet_classes_fp).parent.glob("*.JPEG")
+        ]
         print("Imagenet categories loaded.")
         self.warmup()
 

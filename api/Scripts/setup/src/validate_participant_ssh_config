@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Constants
+USERNAME="tracr"
+
+# Check arguments
+if [ $# -ne 2 ]; then
+    echo "Usage: $0 <DEVICE_NICKNAME> <HOSTNAME_OR_IP>"
+    exit 1
+fi
+
+DEVICE_NICKNAME=$1
+HOSTNAME_OR_IP=$2
+KEYNAME=~/.ssh/$DEVICE_NICKNAME
+
+# Check for existence of private key
+if [ ! -f "$KEYNAME" ]; then
+    echo "Private key does not exist. SSH is not properly configured."
+    exit 1
+fi
+
+# Check for existence of entry in SSH config file
+CONFIG_LINE="Host $DEVICE_NICKNAME"
+if ! grep -qF "$CONFIG_LINE" ~/.ssh/config; then
+    echo "No entry for $DEVICE_NICKNAME in SSH config file. SSH is not properly configured."
+    exit 1
+fi
+
+# Test SSH connection
+echo "Testing SSH connection..."
+ssh -q -o BatchMode=yes -o ConnectTimeout=5 $DEVICE_NICKNAME exit
+if [ $? -eq 0 ]; then
+    echo "SSH connection successful! SSH is properly configured for $DEVICE_NICKNAME."
+    exit 0
+else
+    echo "SSH connection failed. SSH is not properly configured for $DEVICE_NICKNAME."
+    exit 1
+fi

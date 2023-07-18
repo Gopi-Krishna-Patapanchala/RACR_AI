@@ -2,6 +2,8 @@
 
 # Constants
 USERNAME="tracr"
+PASSWORD="tracr"
+KEY_SIZE=2048  # Adjustable key size
 
 # Check arguments
 if [ $# -ne 2 ]; then
@@ -13,17 +15,40 @@ DEVICE_NICKNAME=$1
 HOSTNAME_OR_IP=$2
 KEYNAME=~/.ssh/$DEVICE_NICKNAME
 
+# Backup Config
+BACKUP_DIR=~/.ssh/config_backups
+mkdir -p $BACKUP_DIR
+CONFIG_BACKUP=$BACKUP_DIR/config.bak_$(date +%Y%m%d_%H%M%S)
+if [ -f ~/.ssh/config ]; then
+    echo "Creating backup of existing SSH config file at $CONFIG_BACKUP"
+    cp ~/.ssh/config $CONFIG_BACKUP
+fi
+
 # Generate the SSH key pair
 if [ ! -f "$KEYNAME" ]; then
-    echo "Generating SSH key pair..."
-    ssh-keygen -t rsa -f $KEYNAME
+    echo "Generating SSH key pair with size $KEY_SIZE bits..."
+    expect -c "
+    spawn ssh-keygen -t rsa -b $KEY_SIZE -f $KEYNAME
+    expect \"*pass*: \"
+    send \"\r\"
+    expect \"*pass*again*: \"
+    send \"\r\"
+    expect eof
+    "
 else
     echo "SSH key pair already exists. Skipping generation."
 fi
 
 # Install the public key on the server
 echo "Installing public key on remote server..."
-SSH_AUTH_SOCK='' ssh-copy-id -i $KEYNAME.pub $USERNAME@$HOSTNAME_OR_IP
+expect -c "
+set env(SSH_AUTH_SOCK) \"\";
+spawn ssh-copy-id -i $KEYNAME.pub $USERNAME@$HOSTNAME_OR_IP
+expect \"*password: \"
+send \"$PASSWORD\r\"
+expect eof
+"
+
 if [ $? -ne 0 ]; then
     echo "Failed to copy public key to remote server"
     exit 1
@@ -32,7 +57,7 @@ fi
 # Add an entry to the ssh config file
 CONFIG_LINE="Host $DEVICE_NICKNAME"
 if ! grep -qF "$CONFIG_LINE" ~/.ssh/config; then
-    echo "Adding entry to SSH config file..."
+    echo "Adding entry to SSH config file at location ~/.ssh/config..."
     echo -e "\n# Entry for $DEVICE_NICKNAME" >> ~/.ssh/config
     echo "Host $DEVICE_NICKNAME" >> ~/.ssh/config
     echo "  Hostname $HOSTNAME_OR_IP" >> ~/.ssh/config
@@ -40,6 +65,16 @@ if ! grep -qF "$CONFIG_LINE" ~/.ssh/config; then
     echo "  IdentityFile $KEYNAME" >> ~/.ssh/config
 else
     echo "Entry already exists in SSH config file. Skipping addition."
+fi
+
+# Test SSH connection
+echo "Testing SSH connection..."
+ssh -q -o BatchMode=yes $DEVICE_NICKNAME exit
+if [ $? -eq 0 ]; then
+    echo "SSH connection successful!"
+else
+    echo "SSH connection failed. Please check your setup and try again."
+    exit 1
 fi
 
 echo ""
