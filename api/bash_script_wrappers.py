@@ -8,7 +8,7 @@ import utils
 PROJECT_ROOT = utils.get_tracr_root()
 
 
-def check_node(
+def validate_node_setup(
     experiment_name: str,
     node_type: str,
     python_version: str,
@@ -43,7 +43,7 @@ def check_node(
         A dictionary of booleans indicating the results of the checks. If
         the check was successfull, all values will be True.
     """
-    script_filepath = PROJECT_ROOT / "api" / "Scripts" / "check_node"
+    script_filepath = PROJECT_ROOT / "api" / "Scripts" / "validate_node_setup"
 
     # tuple of predicates that will be checked by the check_venv script
     checks = (
@@ -140,7 +140,7 @@ def node_setup(
     )
 
 
-def setup_remote_participant(host: str, uninstall: bool = False) -> dict:
+def participant_bootstrap(host: str, uninstall: bool = False) -> dict:
     """
     Wraps the setup_remote script to prepare a participant device for use with
     tracr by connecting over SSH. The device must already be configured in the
@@ -156,7 +156,9 @@ def setup_remote_participant(host: str, uninstall: bool = False) -> dict:
     dict
         A dictionary describing the success/failure of the operation
     """
-    script_filepath = PROJECT_ROOT / "api" / "Scripts" / "setup" / "remote_setup"
+    script_filepath = (
+        PROJECT_ROOT / "api" / "Scripts" / "setup" / "participant_bootstrap"
+    )
 
     # tuple of stages that the script will progress through
     stages = (
@@ -181,6 +183,35 @@ def setup_remote_participant(host: str, uninstall: bool = False) -> dict:
     )
 
 
+def validate_controller_setup() -> dict:
+    """
+    Wraps the validate_controller_setup script to check that the controller is
+    ready for use with tracr.
+
+    Returns:
+    --------
+    dict
+        A dictionary describing the success/failure of each check
+    """
+    script_filepath = (
+        PROJECT_ROOT / "api" / "Scripts" / "setup" / "validate_controller_setup"
+    )
+
+    checks = (
+        "pyenv_build_dependecies",
+        "pyenv_installation",
+        "python_version_installation",
+        "tracr-venv_creation",
+        "tracr-venv_activation",
+        "tracr-venv_packages",
+        "~/.tracr/__creation",
+    )
+
+    return utils.run_bash_script_and_return_results(
+        script_filepath, [], checks, invert_bits=True
+    )
+
+
 if __name__ == "__main__":
     # Arg sets that can be used
     LOCAL_CHECKNODE_OASR = (
@@ -199,7 +230,7 @@ if __name__ == "__main__":
     )
 
     def show_checknode(e, n, py, pip, m, r=False):
-        res = check_node(e, n, py, pip, m, remote_host=r)
+        res = validate_node_setup(e, n, py, pip, m, remote_host=r)
         print(f"CheckNode Results for {e}: {n} ({'remote' if r else 'local'}):")
         for flag, bit in res.items():
             print(f"{flag}: {bit}")
@@ -207,11 +238,16 @@ if __name__ == "__main__":
 
     print(f"\nProject Root (run as main): {PROJECT_ROOT}\n")
 
+    for i, j in validate_controller_setup().items():
+        print(f"{i}: {j}")
+
     show_checknode(*LOCAL_CHECKNODE_OASR)
     show_checknode(*REMOTE_CHECKNODE_OASC, r="home-pi-tracr")
 
     if not all(
-        check_node(*REMOTE_CHECKNODE_OASC, remote_host="home-pi-tracr").values()
+        validate_node_setup(
+            *REMOTE_CHECKNODE_OASC, remote_host="home-pi-tracr"
+        ).values()
     ):
         print("\nRemote node not ready - setting up now...\n")
         res = node_setup("home-pi-tracr", *REMOTE_CHECKNODE_OASC[:-1], overwrite=True)

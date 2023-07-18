@@ -3,12 +3,26 @@ import subprocess
 
 
 def get_tracr_root() -> pathlib.Path:
+    """
+    Returns the root directory of the TRACR project as a pathlib.Path object.
+    Does not matter where this function is called from, as long as it is
+    called from within the TRACR project directory (which should be the case)
+    """
     result = pathlib.Path(__file__).parent
     repeats = 0
     while result.name != "RACR_AI" and repeats < 5:
         result = result.parent
         repeats += 1
     return result
+
+
+def get_text(textfile: pathlib.Path) -> str:
+    """
+    Trivial little function that returns text file contents as a string.
+    """
+    with open(textfile, "r") as file:
+        text = file.read()
+    return text
 
 
 def run_bash_script_and_return_results(

@@ -1,0 +1,144 @@
+#!/bin/bash
+
+# Define Python version
+PYTHON_VERSION="3.11.4"
+DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
+PROJECT_ROOT=$(realpath "$DIR/../../../")
+EXIT_CODE=0
+
+# Each bit in the exit code signifies a different check:
+# Bit 1 (value 1): Check if dependencies for pyenv are installed
+# Bit 2 (value 2): Check if pyenv is installed
+# Bit 3 (value 4): Check if Python with pyenv is installed
+# Bit 4 (value 8): Check if virtual environment exists
+# Bit 5 (value 16): Check if venv activation works
+# Bit 6 (value 32): Check if dependencies from requirements.txt are installed
+# Bit 7 (value 64): Check if directory ~/.tracr/ exists
+
+# Define the check names for pretty print at the end
+declare -A check_names
+check_names=( [1]="Dependencies for pyenv" [2]="Pyenv" [3]="Python with pyenv" [4]="Virtual environment" [5]="Venv activation" [6]="Dependencies from requirements.txt" [7]="Directory ~/.tracr/ exists")
+
+# Check functions
+function check_dependencies() {
+    # Check each dependency with dpkg -l
+    dependencies=("make" "build-essential" "libssl-dev" "zlib1g-dev" "libbz2-dev" "libreadline-dev" "libsqlite3-dev" "curl" "libncursesw5-dev" "xz-utils" "tk-dev" "libxml2-dev" "libxmlsec1-dev" "libffi-dev" "liblzma-dev" "git")
+    for dep in "${dependencies[@]}"; do
+        if ! dpkg -l $dep &> /dev/null
+        then
+            return 1
+        fi
+    done
+    return 0
+}
+
+function check_pyenv() {
+    if command -v pyenv &> /dev/null
+    then
+        return 0
+    else
+        return 1
+    fi
+}
+
+function check_python() {
+    if pyenv versions --bare | grep -q $PYTHON_VERSION
+    then
+        return 0
+    else
+        return 1
+    fi
+}
+
+function check_venv() {
+    if ! command -v pyenv activate tracr-venv &> /dev/null
+    then
+        return 1
+    else
+        pyenv deactivate
+        return 0
+    fi
+}
+
+function check_venv_activation() {
+    pyenv activate tracr-venv
+    if [[ "$VIRTUAL_ENV" != "" ]]
+    then
+        pyenv deactivate
+        return 0
+    else
+        return 1
+    fi
+}
+
+function check_dependencies_installation() {
+    filename="requirements.txt"
+    while IFS= read -r line
+    do
+        package_name=$(echo $line | cut -d= -f1)
+        required_version=$(echo $line | cut -d= -f3)
+        installed_version=$(pip show $package_name | grep "Version: " | cut -d' ' -f2)
+        if [[ -z "$installed_version" ]]
+        then
+            echo "Package $package_name is not installed."
+            return 1
+        elif [[ "$installed_version" != "$required_version" ]]
+        then
+            echo "Package $package_name is installed, but the version is incorrect. Required: $required_version, Installed: $installed_version"
+            return 1
+        else
+            echo "Package $package_name is installed with correct version."
+            return 0
+        fi
+    done < $filename
+}
+
+function check_tracr_directory() {
+    if [[ -d $HOME/.tracr ]]
+    then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Make extra sure that pyenv is initialized
+export PYENV_ROOT="$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+
+# cd to project root
+cd $PROJECT_ROOT
+
+# Perform checks
+if ! check_dependencies; then EXIT_CODE=$((EXIT_CODE | 1)); fi
+if ! check_pyenv; then EXIT_CODE=$((EXIT_CODE | 2)); fi
+if ! check_python; then EXIT_CODE=$((EXIT_CODE | 4)); fi
+if ! check_venv; then EXIT_CODE=$((EXIT_CODE | 8)); fi
+if ! check_venv_activation; then EXIT_CODE=$((EXIT_CODE | 16)); fi
+if ! check_dependencies_installation; then EXIT_CODE=$((EXIT_CODE | 32)); fi
+if ! check_tracr_directory; then EXIT_CODE=$((EXIT_CODE | 64)); fi
+
+# Check exit code bits
+echo ""
+echo "----------------------------------------"
+echo "Checking the setup steps for failures..."
+echo "----------------------------------------"
+echo ""
+for i in {1..7}
+do
+    if (( (EXIT_CODE & (1 << ($i - 1))) != 0 )); then
+        echo "${check_names[$i]}: Failed"
+    else
+        echo "${check_names[$i]}: Passed"
+    fi
+done
+
+echo ""
+echo "--------------------------------"
+echo "Check completed with exit code ${EXIT_CODE}!"
+echo "--------------------------------"
+echo ""
+
+exit $EXIT_CODE

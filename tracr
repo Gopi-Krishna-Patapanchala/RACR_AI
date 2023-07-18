@@ -24,16 +24,18 @@ from getmac import get_mac_address
 from pathlib import Path
 from collections import defaultdict
 
-from api.experiments import Experiment
-from api.config_mgr import Configs, ControllerConfigs, DeviceConfigs
-from api.network import LAN, Device, Controller
+import api.experiment as exp
+import api.device as dev
+import api.utils as utils
+import api.controller as contol
+import api.bash_script_wrappers as bashw
 
 
 # path to this file's location
-project_root = Path(__file__).parent.absolute()
+PROJECT_ROOT = utils.get_tracr_root()
 
 # path to console text files
-textfiles = project_root / "setup" / "console_text"
+CONSOLE_TXT_DIR = PROJECT_ROOT / "Assets" / "console_text"
 
 
 # logger setup
@@ -46,7 +48,7 @@ def setup_logging(verbosity):
     logger.setLevel(logging.DEBUG)
 
     # all messages will be logged to this file
-    file_handler = logging.FileHandler(project_root / "tracr.log")
+    file_handler = logging.FileHandler(PROJECT_ROOT / "tracr.log")
     file_handler.setLevel(logging.DEBUG)
 
     # only messages of the given level or higher will be logged to console
@@ -66,7 +68,7 @@ def setup_logging(verbosity):
 
 setup_logging(2)  # INFO level
 
-logging.info("tracr CLI run as main. Logging setup complete.")
+logging.debug("tracr CLI run as main. Logging setup complete.")
 
 
 # The config manager will be treated like a singleton, so it is intantiated
@@ -74,17 +76,48 @@ logging.info("tracr CLI run as main. Logging setup complete.")
 controller = None
 
 
-# trivial function to be concise
-def get_text(textfile: Path) -> str:
-    with open(textfile, "r") as file:
-        text = file.read()
-    return text
-
-
 # CLI is split up into submodules responsible for different operations, so
 # there are lots of arguments that can be used, each with their own option
 # flags and arguments. This is all organized using argparse, which reads
 # the arguments and options and passes them to the appropriate function.
+
+
+##############################################################################
+######################### SETUP SUBMODULE FUNCTIONS ##########################
+##############################################################################
+
+
+def setup_controller(args):
+    reset = bool(args.reset)
+    if args.overwrite:
+        overwrites = {
+            param: value
+            for param, value in [param.split("=") for param in args.overwrite]
+        }
+    else:
+        overwrites = False
+
+    if reset and ControllerConfigs().config_file_exists_locally():
+        confirm = input("Are you sure you want to reset the controller? [y/N] ")
+        if not confirm.lower().startswith("y"):
+            return
+        ControllerConfigs().erase_local_config_file()
+    new_controller = ControllerConfigs(make_new_config_file=True)
+
+    if overwrites:
+        for param, value in overwrites.items():
+            new_controller.edit_config_item(param, value, category="controller")
+
+
+def setup_device(args):
+    # TODO: define setup device function
+    pass
+
+
+def setup_experiment(args):
+    # TODO: define setup experiment function
+    pass
+
 
 ##############################################################################
 ##################### DEVICE SUBMODULE FUNCTIONS #############################
@@ -294,43 +327,6 @@ def experiment_add(args):
     return
 
 
-##############################################################################
-######################### SETUP SUBMODULE FUNCTIONS ##########################
-##############################################################################
-
-
-def setup_controller(args):
-    reset = bool(args.reset)
-    if args.overwrite:
-        overwrites = {
-            param: value
-            for param, value in [param.split("=") for param in args.overwrite]
-        }
-    else:
-        overwrites = False
-
-    if reset and ControllerConfigs().config_file_exists_locally():
-        confirm = input("Are you sure you want to reset the controller? [y/N] ")
-        if not confirm.lower().startswith("y"):
-            return
-        ControllerConfigs().erase_local_config_file()
-    new_controller = ControllerConfigs(make_new_config_file=True)
-
-    if overwrites:
-        for param, value in overwrites.items():
-            new_controller.edit_config_item(param, value, category="controller")
-
-
-def setup_device(args):
-    # TODO: define setup device function
-    pass
-
-
-def setup_experiment(args):
-    # TODO: define setup experiment function
-    pass
-
-
 def network(args):
     if args.d:
         print(f"Status for host: {args.d}")
@@ -358,7 +354,7 @@ def setup(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description=get_text(textfiles / "tracr_description.txt"),
+        description=utils.get_text(CONSOLE_TXT_DIR / "tracr_description.txt"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -366,7 +362,7 @@ def main():
         "-v",
         "--version",
         action="version",
-        version=get_text(textfiles / "about_tracr.txt"),
+        version=utils.get_text(CONSOLE_TXT_DIR / "about_tracr.txt"),
     )
     subparsers = parser.add_subparsers(title="SUBMODULES")
 

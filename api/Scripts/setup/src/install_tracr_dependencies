@@ -1,0 +1,58 @@
+#!/bin/bash
+# install_dependencies.sh
+
+REMOTE_HOST=""
+
+MY_DIR=$(dirname "$(realpath "$BASH_SOURCE")")
+PROJECT_ROOT=$("$MY_DIR/project_root")
+
+# Parse command-line options
+while (( "$#" )); do
+    case "$1" in
+        --remote)
+            REMOTE_HOST="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "Error: Invalid argument"
+            exit 1
+    esac
+done
+
+# Read all package names into an array
+mapfile -t packages < "$PROJECT_ROOT/api/Scripts/setup/src/tracr_dependencies.txt"
+
+for package in "${packages[@]}"
+do
+    if [ -z "$REMOTE_HOST" ]; then
+        # Local installation
+        if dpkg -s $package | grep -q "ok installed"; then
+            echo "$package is already installed."
+        else
+            echo "Installing $package..."
+            if sudo apt-get install -y $package; then
+                echo "$package installed successfully."
+            else
+                echo "Failed to install $package."
+                exit 1
+            fi
+        fi
+    else
+        # Remote installation
+        if ssh "$REMOTE_HOST" "dpkg -s $package" | grep -q "ok installed"; then
+            echo "$package is already installed on $REMOTE_HOST."
+        else
+            echo "Installing $package on $REMOTE_HOST..."
+            if ssh "$REMOTE_HOST" "sudo apt-get install -y $package"; then
+                echo "$package installed successfully on $REMOTE_HOST."
+            else
+                echo "Failed to install $package on $REMOTE_HOST."
+                exit 1
+            fi
+        fi
+    fi
+done

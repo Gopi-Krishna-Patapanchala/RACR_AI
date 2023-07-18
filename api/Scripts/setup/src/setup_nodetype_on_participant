@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Usage: node_setup [-o, --overwrite] [-d, --debug] <Host> <experiment_name> <node_type> <python_version> <pip_version>
+# Usage: setup_nodetype_on_participant [-o, --overwrite] [-d, --debug] <Host> <experiment_name> <node_type> <python_version> <pip_version>
 
 # Exit codes (bitwise)
 # 1 (2^0): directory exists and overwrite is false
@@ -34,7 +34,7 @@ node_type=$3
 python_version=$4
 pip_version=$5
 
-local_base_dir="$(dirname "$(realpath "$0")")/../../TestCases/$experiment_name/NodeTypes/${node_type}"
+local_base_dir="$(dirname "$(realpath "$0")")/../../../../TestCases/$experiment_name/NodeTypes/${node_type}"
 remote_username="$(grep -A 3 "Host $remote_host" ~/.ssh/config | grep "User" | sed -e 's/ *User *//' -e 's/ *//')"
 remote_base_dir="/home/$remote_username/.tracr/experiments/$experiment_name/NodeTypes/${node_type}"
 
@@ -59,12 +59,12 @@ then
     fi
     exit $exit_code
   else
-    ssh $remote_host "rm -rf \"$remote_base_dir\""
+    ssh $remote_host "sudo rm -rf \"$remote_base_dir\""
   fi
 fi
 
 # Use rsync to copy the required files from the local directory to the remote directory.
-rsync_output=$(rsync -avz --mkpath --exclude="${node_type,,}-venv" "$local_base_dir/" "$remote_host:$remote_base_dir" 2>&1)
+rsync_output=$(rsync -avz --mkpath --rsync-path="sudo rsync" --exclude="${node_type,,}-venv" "$local_base_dir/" "$remote_host:$remote_base_dir" 2>&1)
 if [ $? -ne 0 ]
 then
   exit_code=$((exit_code | 2))
@@ -75,8 +75,17 @@ then
   exit $exit_code
 fi
 
-ssh $remote_host <<EOF
+ssh_output=$(ssh $remote_host <<EOF
 cd "$remote_base_dir"
+
+# Make sure the owner of all new directories is still tracr
+sudo chown -R tracr /home/tracr/.tracr
+
+# Be extra sure that pyenv is in the path
+export PYENV_ROOT="\$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="\$PYENV_ROOT/bin:\$PATH"
+eval "\$(pyenv init -)"
+eval "\$(pyenv virtualenv-init -)"
 
 # Check if the desired Python version is installed. If not, install it.
 pyenv_output=\$(pyenv install -s $python_version 2>&1)
@@ -101,7 +110,7 @@ then
 fi
 
 # Create a new virtual environment
-venv_output=\$(python -m venv "${node_type,,}-venv")
+venv_output=\$(pyenv virtualenv $python_version "${node_type,,}-venv")
 if [ \$? -ne 0 ]
 then
   exit_code=\$((exit_code | 8))
@@ -109,10 +118,12 @@ then
   then
     echo "Creating venv failed: \$venv_output"
   fi
+else
+  pyenv local "${node_type,,}-venv"
 fi
 
 # and activate it
-activate_output=\$(source "${node_type,,}-venv/bin/activate" 2>&1)
+activate_output=\$(pyenv activate "${node_type,,}-venv" 2>&1)
 if [ \$? -ne 0 ]
 then
   exit_code=\$((exit_code | 8))
@@ -123,7 +134,7 @@ then
 fi
 
 # Update pip to the specified version.
-pip_output=\$(source "${node_type,,}-venv/bin/activate" && pip install --upgrade pip==$pip_version 2>&1)
+pip_output=\$(pyenv activate "${node_type,,}-venv" && pip install --upgrade pip==$pip_version 2>&1)
 if [ \$? -ne 0 ]
 then
   exit_code=\$((exit_code | 16))
@@ -134,7 +145,7 @@ then
 fi
 
 # Install the packages specified in requirements.txt.
-pip_install_output=\$(source "${node_type,,}-venv/bin/activate" && pip install -r requirements.txt 2>&1)
+pip_install_output=\$(pyenv activate "${node_type,,}-venv" && pip install -r requirements.txt 2>&1)
 if [ \$? -ne 0 ]
 then
   exit_code=\$((exit_code | 32))
@@ -146,3 +157,7 @@ fi
 
 exit \$exit_code
 EOF
+)
+
+exit_code=$?
+exit $exit_code
