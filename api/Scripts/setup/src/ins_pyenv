@@ -1,0 +1,46 @@
+function add_pyenv_configs() {
+    if ! grep -qxF "$1" "$2"; then
+        echo "$1" >> "$2"
+        echo "    Added [$1] to $2."
+    else
+        echo "    [$1] already exists in $2."
+    fi
+    if ! grep -qxF "$1" "$3"; then
+        echo "$1" >> "$3"
+        echo "    Added [$1] to $3."
+    else
+        echo "    [$1] already exists in $3."
+    fi
+}
+
+function install_pyenv() {
+    echo "  testing usage of 'pyenv' command..."
+    if ! type pyenv >/dev/null 2>&1; then
+        echo "  'pyenv' command not working. Installing pyenv..."
+        if curl -L https://pyenv.run | bash; then
+            echo "  Successfully installed pyenv."
+            if [ -e ~/.profile ]; then
+                profile=~/.profile
+            elif [ -e ~/.bash_profile ]; then
+                profile=~/.bash_profile
+            elif [ -e ~/.bash_login ]; then
+                profile=~/.bash_login
+            else
+                touch ~/.profile
+                profile=~/.profile
+            fi
+            echo "  Adding pyenv to bashrc and $profile..."
+            add_pyenv_configs 'export PATH="$HOME/.pyenv/bin:$PATH"' ~/.bashrc $profile
+            add_pyenv_configs 'eval "$(pyenv init --path)"' ~/.bashrc $profile
+            add_pyenv_configs 'eval "$(pyenv init -)"' ~/.bashrc $profile
+            add_pyenv_configs 'eval "$(pyenv virtualenv-init -)"' ~/.bashrc $profile
+            source ~/.bashrc
+        else
+            echo "  Failed to install pyenv."
+        fi
+    else
+        echo "  'pyenv' command working. Skipping pyenv installation."
+    fi
+}
+
+install_pyenv

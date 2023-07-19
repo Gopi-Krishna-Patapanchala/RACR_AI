@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Define Python version and the directory of this script and cd into it
+DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
+PROJECT_ROOT=$(realpath "$DIR/../../../../")
+EXIT_CODE=0
+
+# Other defaults
+MAIN_VENV_NAME="tracr-venv"
+MAIN_VENV_PYTHON_VERSION="3.11.4"
+MAIN_VENV_PIP_VERSION="latest"
+QUIET=0
+
+if [ "$1" == "-q" ]; then
+  QUIET=1
+fi
+
+# Each bit in the exit code signifies a different error state:
+# Bit 1 (value 1): Error while installing dependencies for pyenv
+# Bit 2 (value 2): Error while setting up pyenv
+# Bit 3 (value 4): Error while installing Python with pyenv
+# Bit 4 (value 8): Error while configuring the virtual environment
+# Bit 5 (value 16): Error while creating the tracr data directory
+
+# Define the step names for pretty print at the end
+declare -A step_names
+step_names=( [1]="Installing system dependencies" [2]="Setting up pyenv" [3]="Installing Python with pyenv" [4]="Configuring tracr's virtual environment" [5]="Creating tracr data directories")
+
+# Error checking function
+function run_stage() {
+    path_to_script=$2
+    error_bit=$1
+    # Now just looking at optional arguments
+    shift 2
+    # run the stage here (with optional arguments passed to stage, if any)
+    if [ $QUIET -eq 1 ]; then
+        "$path_to_script" "$@" > /dev/null 2>&1
+    else
+        "$path_to_script" "$@"
+    fi
+    if [ $? -ne 0 ]
+    then
+        EXIT_CODE=$((EXIT_CODE | $error_bit))
+    fi
+}
+
+# cd into the project root
+cd $PROJECT_ROOT
+
+# Install dependencies
+run_stage 1 "$DIR/../src/install_tracr_dependencies" 
+# Install and configure pyenv
+run_stage 2 "$DIR/../src/setup_pyenv" 
+# Install the specified Python version with pyenv
+run_stage 4 "$DIR/../src/install_python_version_pyenv" $MAIN_VENV_PYTHON_VERSION
+# Create the virtual environment
+run_stage 8 "$DIR/../src/ready_venv" $MAIN_VENV_NAME $PROJECT_ROOT $MAIN_VENV_PYTHON_VERSION $MAIN_VENV_PIP_VERSION
+# Create the ~/.tracr directory
+run_stage 16 "$DIR/../src/create_tracr_directory"
+
+# interpret results
+if [ $QUIET -eq 0 ]; then
+    echo -e "\n\n============================== SUMMARY ==============================\n"
+
+    for i in {1..5}
+    do
+        if (( (EXIT_CODE & (1 << ($i - 1))) != 0 )); then
+            echo -e "$(tput setaf 1)x  Error occurred while: ${step_names[$i]}$(tput sgr0)"
+        else
+            echo -e "$(tput setaf 2)-  Successfully completed: ${step_names[$i]}$(tput sgr0)"
+        fi
+    done
+
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo -e "\n$(tput setaf 2)All stages completed successfully!$(tput sgr0)"
+        echo -e "\n$(tput setaf 6)You can now run the tracr CLI from any directory.$(tput sgr0)"
+        echo -e "$(tput setaf 6)Use 'tracr -h' for help getting started.$(tput sgr0)"
+    else
+        echo -e "\n$(tput setaf 1)Some stages failed, please check the summary above. Exiting with code: $EXIT_CODE$(tput sgr0)"
+    fi
+
+    echo -e "\n====================================================================\n"
+fi
+
+exit $EXIT_CODE

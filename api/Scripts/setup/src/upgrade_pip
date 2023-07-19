@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Default pip version and remote host
+PIP_VERSION=""
+REMOTE_HOST=""
+
+# Parse command line arguments
+while (( "$#" )); do
+  case "$1" in
+    --version)
+      PIP_VERSION=$2
+      shift 2
+      ;;
+    --remote)
+      REMOTE_HOST=$2
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+# Define the upgrade pip command based on the pip version
+if [ -z $PIP_VERSION ]; then
+  UPGRADE_COMMAND="pip install --upgrade pip"
+else
+  UPGRADE_COMMAND="pip install --upgrade pip==$PIP_VERSION"
+fi
+
+# If a remote host is specified, use a heredoc to run the upgrade command on the remote host
+if [ ! -z $REMOTE_HOST ]; then
+  ssh $REMOTE_HOST "sudo apt-get update; sudo apt-get install python3-pip -y; $UPGRADE_COMMAND"
+else
+  sudo apt-get update
+  sudo apt-get install python3-pip -y
+  $UPGRADE_COMMAND
+fi

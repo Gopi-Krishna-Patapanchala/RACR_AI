@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# parse command line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --remote) remote="$2"; shift;;
+        *) echo "Unknown parameter passed: $1"; exit 1;;
+    esac
+    shift
+done
+
+# the install_pyenv script as a single quoted string
+DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
+PROJECT_ROOT=$(realpath "$DIR/../../../..")
+ins_pyenv_script_path="$DIR/ins_pyenv"
+install_pyenv_script=$(cat $ins_pyenv_script_path)
+
+if [ -z "$remote" ]; then
+    # if the script is being run on local, it's a controller - add repo to path
+    if ! cat ~/.bashrc | grep -q "RACR_AI"; then
+        echo "Adding tracr repo to PATH..."
+        echo "export PATH=$PROJECT_ROOT:\$PATH" >> ~/.bashrc
+    else
+        echo "tracr repo already in PATH."
+    fi
+    echo 'export PATH="$HOME/.pyenv/bin:$PATH"' >> ~/.bashrc
+    # install locally
+    echo "Checking pyenv locally..."
+    eval "$install_pyenv_script"
+    if type pyenv >/dev/null 2>&1; then
+        echo "$(tput setaf 2)pyenv is working properly.$(tput sgr0)"
+        exit 0
+    else
+        echo "$(tput setaf 1)Failed to ensure that pyenv is working properly.$(tput sgr0)"
+        exit 1
+    fi
+else
+    # install remotely
+    echo "Checking pyenv remotely on $remote..."
+    ssh -t $remote "bash -ls" < $ins_pyenv_script_path
+    if ssh -t $remote 'bash -l -c "type pyenv >/dev/null 2>&1"'; then
+        echo "$(tput setaf 2)pyenv is working properly on $remote.$(tput sgr0)"
+        exit 0
+    else
+        echo "$(tput setaf 1)Failed to ensure that pyenv is working properly on $remote.$(tput sgr0)"
+        exit 1
+    fi
+fi

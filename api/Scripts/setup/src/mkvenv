@@ -1,0 +1,137 @@
+#!/bin/bash
+
+VENV_NAME=$1
+VENV_LOCATION=$2
+PYTHON_VERSION=$3
+PIP_VERSION=$4
+REQUIRE_FILENAME=$5
+
+if [[ "$PIP_VERSION" == "latest" ]]; then
+    PIP_VERSION=""
+fi
+VENV_LOCATION=$(realpath "$VENV_LOCATION")
+
+# Check whether the venv location exists
+echo "  Checking if the venv location $VENV_LOCATION exists..."
+if [ ! -d "$VENV_LOCATION" ]; then 
+    echo "    The location does not exist."
+    exit 1
+else
+    echo "    The location exists."
+    cd $VENV_LOCATION
+fi
+
+# If the specified python version hasn't been installed yet, do it
+echo "  Ensuring installation of Python $PYTHON_VERSION..."
+if ! pyenv versions | grep -q $PYTHON_VERSION; then
+    echo "    Not yet installed. Installing Python $PYTHON_VERSION..."
+    if ! pyenv install $PYTHON_VERSION; then
+        echo "      Failed to install Python $PYTHON_VERSION."
+        exit 1
+    else
+        echo "      Python $PYTHON_VERSION installed successfully."
+    fi
+else
+    echo "    Python $PYTHON_VERSION is already installed."
+fi
+
+# Create the virtual environment
+echo "  Ensuring existence of virtual environment named $VENV_NAME..."
+if pyenv versions --bare | grep -qx $VENV_NAME; then
+    echo "    Virtual environment $VENV_NAME already exists."
+else
+    echo "    Virtual environment $VENV_NAME does not exist. Creating..."
+    if ! pyenv virtualenv $PYTHON_VERSION $VENV_NAME; then
+        echo "    Failed to create virtual environment."
+        exit 1
+    else
+        echo "    Virtual environment created successfully."
+    fi
+fi
+
+# Make it local to the specified directory
+echo "  Ensuring $VENV_NAME is local to the $VENV_LOCATION..."
+if pyenv local $VENV_NAME; then
+    echo "    $VENV_NAME is local to $VENV_LOCATION."
+else
+    echo "    Failed to make $VENV_NAME local to $VENV_LOCATION."
+    exit 1
+fi
+
+# Activate the virtual environment
+echo '  Activating the virtual environment...'
+export PATH="$HOME/.pyenv/bin:$PATH"
+eval "$(pyenv init --path)"
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+if ! pyenv activate $VENV_NAME; then
+    echo '    Failed to activate the virtual environment.'
+    exit 1
+else
+    echo '    Virtual environment activated successfully.'
+fi
+
+# Upgrade pip to desired version
+echo "  Ensuring installation of pip $PIP_VERSION..."
+if [ -z "$PIP_VERSION" ]; then
+    if ! pip install --upgrade pip; then
+        echo "    Failed to install pip latest."
+        exit 1
+    else
+        echo "    pip installed successfully."
+    fi
+else
+    if ! pip install --upgrade pip==$PIP_VERSION; then
+        echo "    Failed to install pip $PIP_VERSION."
+        exit 1
+    else
+        echo "    pip $PIP_VERSION installed successfully."
+    fi
+fi
+
+# Install the required packages
+echo '  Ensuring installation of the required packages...'
+if [ -z "$REQUIRE_FILENAME" ]; then
+    REQUIRE_FILENAME="requirements.txt"
+fi
+general_success=1
+# Get a list of all installed packages and their versions
+installed_packages=$(pip freeze --all)
+while IFS= read -r line
+do
+    package_name=$(echo $line | cut -d= -f1)
+    required_version=$(echo $line | cut -d= -f3 || echo "")
+
+    # Check the list of installed packages for the required package and version
+    if ! echo "$installed_packages" | grep -q "^$package_name==$required_version$"; then
+        if [[ -z "$required_version" ]]; then
+            echo "    Package $package_name is not installed."
+        else
+            echo "    Package $package_name is installed, but the version is incorrect. Required: $required_version, Installed: $(echo "$installed_packages" | grep "^$package_name==" | cut -d'=' -f3)"
+        fi
+        echo "      Installing package $package_name..."
+        if ! pip install $line; then
+            echo "        Failed to install package $package_name."
+            general_success=0
+        else
+            echo "        Package $package_name installed successfully."
+        fi
+    else
+        echo "    Package $package_name is installed with correct version."
+    fi
+done < $REQUIRE_FILENAME
+if [ $general_success -eq 0 ]; then
+    echo "    Failed to install all required packages."
+    exit 1
+else
+    echo "    All required packages installed successfully."
+fi
+
+# Finally, deactivate the virtual environment
+echo '  Deactivating the virtual environment...'
+if ! pyenv deactivate; then
+    echo '    Failed to deactivate the virtual environment.'
+    exit 1
+else
+    echo '    Virtual environment deactivated successfully.'
+fi
