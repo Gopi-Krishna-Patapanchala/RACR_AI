@@ -3,7 +3,7 @@
 # Define Python version
 PYTHON_VERSION="3.11.4"
 DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
-PROJECT_ROOT=$(realpath "$DIR/../../../")
+PROJECT_ROOT=$(realpath "$DIR/../../../../")
 EXIT_CODE=0
 
 # Each bit in the exit code signifies a different check:
@@ -22,14 +22,18 @@ check_names=( [1]="Dependencies for pyenv" [2]="Pyenv" [3]="Python with pyenv" [
 # Check functions
 function check_dependencies() {
     # Check each dependency with dpkg -l
-    dependencies=("make" "build-essential" "libssl-dev" "zlib1g-dev" "libbz2-dev" "libreadline-dev" "libsqlite3-dev" "curl" "libncursesw5-dev" "xz-utils" "tk-dev" "libxml2-dev" "libxmlsec1-dev" "libffi-dev" "liblzma-dev" "git")
-    for dep in "${dependencies[@]}"; do
-        if ! dpkg -l $dep &> /dev/null
+    exitcode=0
+    while IFS= read -r line
+    do
+        if ! dpkg -l $line &> /dev/null
         then
-            return 1
+            echo "Dependency $line is not installed"
+            exitcode=1
+        else
+            echo "Dependency $line is installed"
         fi
-    done
-    return 0
+    done < "$DIR/tracr_dependencies.txt"
+    return $exitcode
 }
 
 function check_pyenv() {
@@ -73,25 +77,28 @@ function check_venv_activation() {
 
 function check_dependencies_installation() {
     filename="requirements.txt"
+    error_occurred=0  # Variable to keep track of whether an error has occurred
+
+    # Get a list of all installed packages and their versions
+    installed_packages=$(pip freeze --all)
+
     while IFS= read -r line
     do
         package_name=$(echo $line | cut -d= -f1)
         required_version=$(echo $line | cut -d= -f3)
-        installed_version=$(pip show $package_name | grep "Version: " | cut -d' ' -f2)
-        if [[ -z "$installed_version" ]]
-        then
-            echo "Package $package_name is not installed."
-            return 1
-        elif [[ "$installed_version" != "$required_version" ]]
-        then
-            echo "Package $package_name is installed, but the version is incorrect. Required: $required_version, Installed: $installed_version"
-            return 1
+
+        # Check the list of installed packages for the required package and version
+        if ! echo "$installed_packages" | grep -q "^$package_name==$required_version$"; then
+            echo "Package $package_name with version $required_version is not installed or the version is incorrect."
+            error_occurred=1
         else
             echo "Package $package_name is installed with correct version."
-            return 0
         fi
     done < $filename
+
+    return $error_occurred  # Return whether an error occurred
 }
+
 
 function check_tracr_directory() {
     if [[ -d $HOME/.tracr ]]

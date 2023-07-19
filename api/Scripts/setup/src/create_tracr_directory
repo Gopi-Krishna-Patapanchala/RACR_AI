@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Function to create directories
+create_dirs() {
+    dirs=("device_info" "experiments")  # Customize this with the directory names
+
+    if [[ -d "$HOME/.tracr" ]]; then
+        echo "  Directory ~/.tracr/ already exists."
+    else
+        echo "  Directory ~/.tracr/ does not exist."
+        echo "  Creating ~/.tracr directory..."
+        if ! mkdir "$HOME/.tracr"; then
+            echo "    Failed to create directory ~/.tracr/"
+            exit 1
+        else
+            echo "    Directory ~/.tracr/ created successfully."
+        fi
+    fi
+
+    echo "  Setting owner and permissions for ~/.tracr/..."
+    chown $USER:$USER "$HOME/.tracr"
+    chmod 777 "$HOME/.tracr"
+    echo "  Owner and permissions for ~/.tracr/ set successfully."
+
+    for dir in "${dirs[@]}"; do
+        if [[ -d "$HOME/.tracr/$dir" ]]; then
+            echo "  Directory ~/.tracr/$dir already exists."
+        else
+            echo "  Directory ~/.tracr/$dir does not exist."
+            if ! mkdir "$HOME/.tracr/$dir";then
+                echo "    Failed to create directory ~/.tracr/$dir"
+                exit 1
+            else
+                echo "    Directory ~/.tracr/$dir created successfully."
+            fi
+        fi
+
+        echo "  Setting owner and permissions for ~/.tracr/$dir..."
+        chown $USER:$USER "$HOME/.tracr/$dir"
+        chmod 777 "$HOME/.tracr/$dir"
+        echo "  Owner and permissions for ~/.tracr/$dir set successfully."
+    done
+}
+
+# If no arguments, create directories locally
+if [ $# -eq 0 ]; then
+    echo "Creating directories locally..."
+    if ! create_dirs; then
+        echo "$(tput setaf 1)Failed to create directories locally.$(tput sgr0)"
+        exit 1
+    else
+        echo "$(tput setaf 2)Directories created successfully.$(tput sgr0)"
+    fi
+    exit 0
+fi
+
+# If --remote option is given, create directories on the remote machine
+if [ "$1" = "--remote" ]; then
+    if [ $# -ne 2 ]; then
+        echo "Usage: $0 --remote <HOST>"
+        exit 1
+    fi
+    echo "Creating directories on $2..."
+    if ! ssh "$2" "$(typeset -f); create_dirs"; then
+        echo "$(tput setaf 1)Failed to create directories on $2.$(tput sgr0)"
+        exit 1
+    else
+        echo "$(tput setaf 2)Directories created successfully on $2.$(tput sgr0)"
+    fi
+    exit 0
+fi
+
+# If an unknown option is given, print usage and exit with code 1
+echo "Usage: $0 [--remote <HOST>]"
+exit 1

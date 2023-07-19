@@ -1,0 +1,66 @@
+#!/bin/bash
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    --remote)
+    REMOTE="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    --require-filename)
+    REQUIRE_FILENAME="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    *)    # unknown option
+    POSITIONAL+=("$1") # save it in an array for later
+    shift # past argument
+    ;;
+esac
+done
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+if [ $# -ne 4 ]; then
+    echo "Usage: $0 venv_name venv_location python_version pip_version [--remote HOST] [--require-filename FILENAME]"
+    exit 1
+fi
+
+VENV_NAME=$1
+VENV_LOCATION=$2
+PYTHON_VERSION=$3
+PIP_VERSION=$4
+
+if [ -z "$REQUIRE_FILENAME" ]; then
+    REQUIRE_FILENAME="requirements.txt"
+fi
+
+VENV_LOCATION=$(realpath "$VENV_LOCATION")
+DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
+INNER_SCRIPT_FP="$DIR/mkvenv"
+INNER_SCRIPT_CONTENTS=$(cat "$INNER_SCRIPT_FP")
+
+if [ -z "$REMOTE" ]; then
+    echo "Ensuring virtual environment setup on local host..."
+    $INNER_SCRIPT_FP "$VENV_NAME" "$VENV_LOCATION" "$PYTHON_VERSION" "$PIP_VERSION" ""
+    if [ $? -ne 0 ]; then
+        echo "$(tput setaf 1)Failed to ensure virtual environment setup on local host.$(tput sgr0)"
+        exit 1
+    else
+        echo "$(tput setaf 2)Virtual environment setup on local host successful.$(tput sgr0)"
+        exit 0
+    fi
+else
+    echo "Ensuring virtual environment setup on remote host $REMOTE..."
+    VENV_LOCATION=$(sed "s|^$HOME/||" <<< "$VENV_LOCATION")
+    if ! ssh -t $REMOTE bash -l -s "$VENV_NAME" "$VENV_LOCATION" "$PYTHON_VERSION" "$PIP_VERSION" "$REQUIRE_FILENAME" < $INNER_SCRIPT_FP; then
+        echo "$(tput setaf 1)Failed to ensure virtual environment setup on remote host $REMOTE.$(tput sgr0)"
+        exit 1
+    else
+        echo "$(tput setaf 2)Virtual environment setup on remote host $REMOTE successful.$(tput sgr0)"
+        exit 0
+    fi
+fi
