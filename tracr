@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 import logging
+from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.columns import Columns
 from rich.console import Console
@@ -27,7 +28,7 @@ from collections import defaultdict
 import api.experiment as exp
 import api.device as dev
 import api.utils as utils
-import api.controller as contol
+import api.controller as control
 import api.bash_script_wrappers as bashw
 
 
@@ -41,39 +42,109 @@ CONSOLE_TXT_DIR = PROJECT_ROOT / "Assets" / "console_text"
 # logger setup
 def setup_logging(verbosity):
     levels = [logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG]
-    console_format = "%(asctime)s - %(module)s - %(levelname)s: %(message)s"
     file_format = "%(asctime)s - %(module)s - %(levelname)s: %(message)s"
 
-    logger = logging.getLogger()
+    logger = logging.getLogger("tracr_logger")
     logger.setLevel(logging.DEBUG)
 
     # all messages will be logged to this file
-    file_handler = logging.FileHandler(PROJECT_ROOT / "tracr.log")
+    file_handler = logging.FileHandler(Path("~/.tracr/logs/main.log").expanduser())
     file_handler.setLevel(logging.DEBUG)
 
     # only messages of the given level or higher will be logged to console
-    console_handler = logging.StreamHandler()
+    console_handler = RichHandler(
+        show_time=False, show_path=False, rich_tracebacks=True
+    )
     console_handler.setLevel(levels[min(verbosity, len(levels) - 1)])
 
     # different formats for file and console logs
-    console_formatter = logging.Formatter(console_format)
     file_formatter = logging.Formatter(file_format)
     file_handler.setFormatter(file_formatter)
-    console_handler.setFormatter(console_formatter)
 
     # Adding the handlers to the logger
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
-
-setup_logging(2)  # INFO level
-
-logging.debug("tracr CLI run as main. Logging setup complete.")
+    return logger
 
 
-# The config manager will be treated like a singleton, so it is intantiated
-# here and initialized in the main function.
-controller = None
+class Session:
+    """
+    Manages the current session, which is really just a single tracr command.
+    Responsible for managing state, logging, and console output.
+    """
+
+    logger: logging.Logger
+    console: Console
+    controller: control.Controller
+    device_mgr: dev.DeviceManager
+
+    def __init__(self, auto_init=True):
+        """
+        The constructor by default sets itself up with a logger, controller,
+        and console, but this can be turned off.
+
+        Parameters
+        ----------
+        auto_init : bool, optional
+            Whether or not to automatically initialize the session with a
+            logger, controller, and console, by default True
+        """
+        if auto_init:
+            self.console = Console()
+            self.controller = control.Controller()
+
+            # check whether the controller has been setup
+            if not self.controller.is_setup(showprogress=True):
+                self.print(
+                    f"Your machine is not yet set up as a tracr controller. "
+                    + f"Run the bootstrap script to get started.",
+                    style="bold red",
+                )
+                sys.exit(1)
+
+            # set up the logger according to the user's verbosity setting
+            verbosity = self.controller.get_settings("Preferences").get("verbosity", 2)
+            self.logger = setup_logging(verbosity)
+            self.device_mgr = dev.DeviceManager()
+        else:
+            self.logger = None
+            self.console = None
+            self.controller = None
+
+    def log(self, level, message):
+        """
+        Logs a message to the session's logger, which may also print the log
+        to the console, depending on the user's verbosity setting.
+        """
+        if not self.logger:
+            raise RuntimeError(
+                "Can't log without first setting a logger for the Session instance."
+            )
+
+        if level == "debug":
+            self.logger.debug(message)
+        elif level == "info":
+            self.logger.info(message)
+        elif level == "warning":
+            self.logger.warning(message)
+        elif level == "error":
+            self.logger.error(message)
+        elif level == "critical":
+            self.logger.critical(message)
+        else:
+            raise ValueError(f"Invalid log level: {level}")
+
+    def print(self, message, **kwargs):
+        """
+        Prints a message to the console, using the session's console.
+        """
+        if not self.console:
+            raise RuntimeError(
+                "Can't print without first setting a console for the Session instance."
+            )
+
+        self.console.print(message, **kwargs)
 
 
 # CLI is split up into submodules responsible for different operations, so
@@ -88,25 +159,7 @@ controller = None
 
 
 def setup_controller(args):
-    reset = bool(args.reset)
-    if args.overwrite:
-        overwrites = {
-            param: value
-            for param, value in [param.split("=") for param in args.overwrite]
-        }
-    else:
-        overwrites = False
-
-    if reset and ControllerConfigs().config_file_exists_locally():
-        confirm = input("Are you sure you want to reset the controller? [y/N] ")
-        if not confirm.lower().startswith("y"):
-            return
-        ControllerConfigs().erase_local_config_file()
-    new_controller = ControllerConfigs(make_new_config_file=True)
-
-    if overwrites:
-        for param, value in overwrites.items():
-            new_controller.edit_config_item(param, value, category="controller")
+    pass
 
 
 def setup_device(args):
@@ -126,95 +179,14 @@ def setup_experiment(args):
 
 def device_ls(args):
     """
-    Shows the user a list of devices filtered by the given flags.
-
+    Shows the user a list of devices.
     Called by the "tracr device ls [-options]" command.
 
     Parameters:
     -----------
     args: argparse.Namespace
         The arguments and options passed to the CLI.
-        "known": bool
-            A flag to show only known devices.
-        "unknown": bool
-            A flag to show only unknown devices.
-        "listening": bool
-            A flag to show only devices that are listening for connections.
-        "ready": bool
-            A flag to show only devices that are ready to be used.
     """
-
-    # if for some reason -ku or -ru is set, the correct output is none
-    if (args.known and args.unknown) or (args.ready and args.unknown):
-        print("\nNo devices matching criteria\n")
-        return
-
-    # if no flags are set, show all devices
-    want_all = not (args.known or args.unknown or args.ready or args.listening)
-
-    # fetch all required devices at once
-    known_devices = (
-        controller.config.get_known_devices()
-        if args.known or args.unknown or want_all
-        else []
-    )
-    known_devices = [Device(controller, **d) for d in known_devices]
-
-    fetched_devices = (
-        [Device.fetch_data(last_ip=ip) for ip in LAN.get_responsive_hosts()]
-        if args.unknown or args.listening or args.ready or want_all
-        else []
-    )
-    for d in fetched_devices:
-        d["auto_update"] = True
-    listening_devices = [Device(controller, **d) for d in fetched_devices]
-
-    # derive the unknown and ready devices
-    known_macs = set(controller.config.get_known_macs())
-    unknown_devices = [
-        device for device in listening_devices if device.uuid not in known_macs
-    ]
-    ready_devices = [device for device in listening_devices if device.is_ready()]
-
-    device_types = {
-        "known": known_devices,
-        "unknown": unknown_devices,
-        "listening": listening_devices,
-        "ready": ready_devices,
-    }
-
-    # All devices to be displayed
-    all_devices = [device for devices in device_types.values() for device in devices]
-
-    # Combine instances by uuid
-    combined_instances = {}
-    for instance in all_devices:
-        if instance.uuid in combined_instances:
-            combined_instances[instance.uuid] = combined_instances[
-                instance.uuid
-            ].absorb(instance)
-        else:
-            combined_instances[instance.uuid] = instance
-
-    # Assign status to all devices
-    for device in combined_instances.values():
-        device.status = ", ".join(
-            tag for tag, devices in device_types.items() if device in devices
-        )
-
-    console = Console()
-    panels = []
-
-    fields = list(Device.get_default_attribs())
-    fields.insert(1, "status")
-
-    for device in combined_instances.values():
-        device_info = "\n".join([f"{field}: {device._get(field)}" for field in fields])
-        panel = Panel(device_info)
-        panels.append(panel)
-
-    console.print(Columns(panels))
-    return
 
 
 def device_refresh(args):
@@ -233,59 +205,7 @@ def device_refresh(args):
         'remote_device' : bool
             If True, the function will also update the remote device's config file
     """
-    known_devices = controller.config.get_known_devices()
-
-    if not known_devices:
-        print("No known devices to refresh")
-        return
-
-    kd_instances = [Device(**dev, auto_update=True) for dev in known_devices]
-
-    updated_devices = [dev.as_dict() for dev in kd_instances]
-
-    def get_diffs(old: dict, new: dict, instance: Device) -> dict:
-        """
-        Returns a device and dict containing the differences between the old and new dicts
-        """
-        for key in set().union(old.keys(), new.keys()):
-            if key not in old:
-                old[key] = "none"
-            if key not in new:
-                new[key] = ""
-        return (
-            instance,
-            {
-                key: (old[key], new[key])
-                for key in old.keys()
-                if str(old[key]) != str(new[key])
-            },
-        )
-
-    diffs = [
-        get_diffs(old, new, dev)
-        for old, new, dev in zip(known_devices, updated_devices, kd_instances)
-    ]
-
-    for dev, diff in diffs:
-        for key, (old, new) in diff.items():
-            if not isinstance(new, str):
-                new = str(new)
-            controller.config.edit_known_device(
-                ("mac_address", dev.get_mac_address()), (key, new)
-            )
-            if not args.silent:
-                print(
-                    f"CHANGED LOCAL CONFIGS - {dev.get_shortname()} {key}: {old} -> {new}"
-                )
-
-        if args.remote_file:
-            with dev.open_ssh_client() as client:
-                for key, (old, new) in diff.items():
-                    controller.device.edit_config_item(client, key, new)
-                    if not args.silent:
-                        print(
-                            f"CHANGED REMOTE CONFIGS - {dev.get_shortname()} {key}: {old} -> {new}"
-                        )
+    pass
 
 
 def device_add(args):
@@ -315,16 +235,7 @@ def experiment_add(args):
     Adds a new experiment to the controller's local system by setting up
     a 'blank slate' directory inside of TestCases.
     """
-    experiment_name = args.name[0]
-    success, message = Experiment.add_new(experiment_name)
-
-    print(f"\n{message}\n")
-
-    if not success:
-        print(
-            "Use 'tracr experiment add --help' for more information on how to use this command."
-        )
-    return
+    pass
 
 
 def network(args):
@@ -352,7 +263,7 @@ def setup(args):
         print("Running setup")
 
 
-def main():
+def main(session: Session):
     parser = argparse.ArgumentParser(
         description=utils.get_text(CONSOLE_TXT_DIR / "tracr_description.txt"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -363,7 +274,7 @@ def main():
         "--version",
         action="version",
         version=utils.get_text(CONSOLE_TXT_DIR / "about_tracr.txt"),
-    )
+    ),
     subparsers = parser.add_subparsers(title="SUBMODULES")
 
     # parser for "device"
@@ -373,34 +284,6 @@ def main():
     # add sub-sub parsers for the device module
     device_subparsers = parser_device.add_subparsers(title="DEVICE MODULE COMMANDS")
     parser_device_ls = device_subparsers.add_parser("ls", help="List devices")
-    parser_device_ls.add_argument(
-        "-k",
-        "--known",
-        action="store_true",
-        help="only show known devices",
-        dest="known",
-    )
-    parser_device_ls.add_argument(
-        "-u",
-        "--unknown",
-        action="store_true",
-        help="only show unknown devices",
-        dest="unknown",
-    )
-    parser_device_ls.add_argument(
-        "-l",
-        "--listening",
-        action="store_true",
-        help="only show devices listening on port 22",
-        dest="listening",
-    )
-    parser_device_ls.add_argument(
-        "-r",
-        "--ready",
-        action="store_true",
-        help="only show devices ready to run experiments",
-        dest="ready",
-    )
     parser_device_ls.set_defaults(func=device_ls)
 
     parser_device_refresh = device_subparsers.add_parser(
@@ -569,23 +452,15 @@ def main():
 
     args = parser.parse_args()
     if "func" in args:
-        global controller
-        if "setup_controller" not in args.func.__name__:
-            # initialize the config manager as a global singleton
-            try:
-                controller = Controller()
-            except FileNotFoundError as e:
-                print(
-                    e,
-                    "This machine may not have been set up as a controller yet.",
-                    "Run 'tracr setup --help' for setup commands.",
-                    sep="\n",
-                )
-                sys.exit(1)
         args.func(args)
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
-    main()
+    # Start the session
+    session = Session()
+    session.log("debug", "tracr CLI run as main. Logging setup complete.")
+
+    # Run the main function
+    main(session)

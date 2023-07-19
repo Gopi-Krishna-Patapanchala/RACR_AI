@@ -2,7 +2,7 @@ import inspect
 import subprocess
 from pathlib import Path
 
-import utils
+import api.utils as utils
 
 # Constants
 PROJECT_ROOT = utils.get_tracr_root()
@@ -183,10 +183,15 @@ def participant_bootstrap(host: str, uninstall: bool = False) -> dict:
     )
 
 
-def validate_controller_setup() -> dict:
+def validate_controller_setup(showprogress: bool = False) -> dict:
     """
     Wraps the validate_controller_setup script to check that the controller is
     ready for use with tracr.
+
+    Parameters:
+    -----------
+    showprogress : bool, optional
+        Whether or not to show the progress bar, by default False
 
     Returns:
     --------
@@ -194,22 +199,88 @@ def validate_controller_setup() -> dict:
         A dictionary describing the success/failure of each check
     """
     script_filepath = (
-        PROJECT_ROOT / "api" / "Scripts" / "setup" / "validate_controller_setup"
+        PROJECT_ROOT / "api" / "Scripts" / "setup" / "controller" / "controller_setup"
     )
 
     checks = (
-        "pyenv_build_dependecies",
-        "pyenv_installation",
+        "tracr_system_dependencies",
+        "pyenv_configuration",
         "python_version_installation",
-        "tracr-venv_creation",
-        "tracr-venv_activation",
-        "tracr-venv_packages",
-        "~/.tracr/__creation",
+        "tracr-venv_configuration",
+        "tracr_datadir_creation",
     )
 
+    if showprogress:
+        progressbar = {"task": "Validating controller setup...", "color": "cyan"}
+    else:
+        progressbar = None
+
     return utils.run_bash_script_and_return_results(
-        script_filepath, [], checks, invert_bits=True
+        script_filepath, ["-q"], checks, invert_bits=True, progress_bar=progressbar
     )
+
+
+def validate_participant_setup(name: str, hostname_or_ip: str) -> dict:
+    """
+    Wraps the validate_participant_ssh_config and validate_participant_sys_setup
+    scripts to check that the participant is ready for use with tracr.
+
+    Parameters:
+    -----------
+    host : str
+        The name of the host in the user's ~/.ssh/config file
+    hostname_or_ip : str
+        The hostname or IP address of the participant
+
+    Returns:
+    --------
+    dict
+        A dictionary describing the success/failure of each check
+    """
+    ssh_config_script_filepath = (
+        PROJECT_ROOT
+        / "api"
+        / "Scripts"
+        / "setup"
+        / "src"
+        / "validate_participant_ssh_config"
+    )
+    sys_setup_script_filepath = (
+        PROJECT_ROOT
+        / "api"
+        / "Scripts"
+        / "setup"
+        / "src"
+        / "validate_participant_sys_setup"
+    )
+
+    ssh_results = utils.run_bash_script_and_return_results(
+        ssh_config_script_filepath,
+        [name, hostname_or_ip],
+        ["ssh_config_ok"],
+        invert_bits=True,
+    )
+    sys_checks = (
+        "tracr_user_exists",
+        "tracr_system_dependencies",
+        "ssh_enabled",
+        "pyenv_configuration",
+        "pyenv_shell_configs",
+        "data_dirs_exist",
+        "python_version_installation",
+        "python_package_installation",
+    )
+    sys_results = utils.run_bash_script_and_return_results(
+        sys_setup_script_filepath, [name, hostname_or_ip], sys_checks, invert_bits=True
+    )
+
+    # add granularity to permission errors
+    ssh_results["ssh_validation_script_permissions_ok"] = ssh_results["permission_ok"]
+    del ssh_results["permission_ok"]
+    sys_results["sys_validation_script_permissions_ok"] = sys_results["permission_ok"]
+    del sys_results["permission_ok"]
+    sys_results.update(ssh_results)
+    return sys_results
 
 
 if __name__ == "__main__":

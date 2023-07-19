@@ -1,9 +1,15 @@
 #!/bin/bash
 
+DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
+DEFAULT_CONTROLLER_CONFIG_FILE="$DIR/../controller/default_controller_config.yaml"
+
 # Function to create directories
 create_dirs() {
-    dirs=("device_info" "experiments")  # Customize this with the directory names
-
+    if [[ $1 == "controller" ]]; then
+        dirs=("device_info" "configs" "logs")
+    else
+        dirs=("device_info" "experiments")
+    fi
     if [[ -d "$HOME/.tracr" ]]; then
         echo "  Directory ~/.tracr/ already exists."
     else
@@ -40,12 +46,41 @@ create_dirs() {
         chmod 777 "$HOME/.tracr/$dir"
         echo "  Owner and permissions for ~/.tracr/$dir set successfully."
     done
+
+    if [[ $1 == "controller" ]]; then
+        echo "  Adding default controller config file..."
+        if [[ -f "$HOME/.tracr/configs/settings.yaml" ]]; then
+            echo "    Default controller config file already exists."
+        else
+            echo "    Default controller config file does not exist."
+            if ! cp "$DEFAULT_CONTROLLER_CONFIG_FILE" "$HOME/.tracr/configs/settings.yaml"; then
+                echo "      Failed to add default controller config file."
+                exit 1
+            else
+                echo "      Default controller config file added successfully."
+            fi
+        fi
+    else
+        echo "  Adding my_uuid.txt file to participant configs..."
+        # check if it already exists
+        if [[ -f "$HOME/.tracr/device_info/my_uuid.txt" ]]; then
+            echo "    my_uuid.txt file already exists."
+        else
+            echo "    my_uuid.txt file does not exist."
+            if ! uuidgen > "$HOME/.tracr/device_info/my_uuid.txt"; then
+                echo "    Failed to add my_uuid.txt file to participant configs."
+                exit 1
+            else
+                echo "    my_uuid.txt file added successfully."
+            fi
+        fi
+    fi
 }
 
 # If no arguments, create directories locally
 if [ $# -eq 0 ]; then
     echo "Creating directories locally..."
-    if ! create_dirs; then
+    if ! create_dirs "controller"; then
         echo "$(tput setaf 1)Failed to create directories locally.$(tput sgr0)"
         exit 1
     else
