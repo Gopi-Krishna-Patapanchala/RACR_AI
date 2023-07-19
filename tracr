@@ -20,6 +20,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.columns import Columns
 from rich.console import Console
+from rich.box import SQUARE
 from rich.table import Table
 from getmac import get_mac_address
 from pathlib import Path
@@ -78,6 +79,7 @@ class Session:
     console: Console
     controller: control.Controller
     device_mgr: dev.DeviceManager
+    exp_mgr: exp.ExperimentManager
 
     def __init__(self, auto_init=True):
         """
@@ -107,10 +109,13 @@ class Session:
             verbosity = self.controller.get_settings("Preferences").get("verbosity", 2)
             self.logger = setup_logging(verbosity)
             self.device_mgr = dev.DeviceManager()
+            self.exp_mgr = exp.ExperimentManager(PROJECT_ROOT / "TestCases")
         else:
             self.logger = None
             self.console = None
             self.controller = None
+            self.device_mgr = None
+            self.exp_mgr = None
 
     def log(self, level, message):
         """
@@ -145,6 +150,85 @@ class Session:
             )
 
         self.console.print(message, **kwargs)
+
+
+def launch_experiment(name, session: Session, preset=None, **kwargs):
+    """
+    Launches an experiment with the given name, and ideally a preset
+    from the experiment's config file. Otherwise, all options must
+    be specified in the kwargs.
+    """
+    if preset:
+        param_dicts = []
+        for nodetype, specs in preset.items():
+            nodename = nodetype
+            num_devices = specs["num_devices"]
+            if specs["run_on"] == "any":
+                devices = session.device_mgr.get_devices_by(
+                    is_available=True, is_setup=True
+                )[:num_devices]
+            elif specs["run_on"] == "controller":
+                devices = [session.controller]
+            else:
+                session.log("warning", "Only 'any' run_on is supported right now.")
+                return
+            logto = Path(specs.get("output").get("log_directory"))
+            monitor = bool(specs.get("output").get("monitor_realtime"))
+            load_data_from = specs.get("input").get("dataset_path")
+            data_type = specs.get("input").get("type")
+            data_loader = specs.get("input").get("loader")
+            port = specs.get("input").get("port")
+            metrics = specs.get("metrics")
+            nodespecs = session.exp_mgr.get_experiment(name).main_config.getval(
+                "nodes", "types", nodename
+            )
+            wait_for = nodespecs.get("depends_on")
+            python_version = nodespecs.get("environment").get("python_version")
+            pip_version = nodespecs.get("environment").get("pip_version")
+            main_file = nodespecs.get("main_file")
+
+            params = {
+                "node_type": nodename,
+                "devices": devices,
+                "logto": logto,
+                "monitor": monitor,
+                "load_data_from": load_data_from,
+                "data_type": data_type,
+                "data_loader": data_loader,
+                "port": port,
+                "metrics": metrics,
+                "wait_for": wait_for,
+                "python_version": python_version,
+                "pip_version": pip_version,
+                "main_file": main_file,
+            }
+
+            for device in devices:
+                if device == session.controller:
+                    controller_ready = all(bashw.validate_node_setup(name, nodename, python_version, pip_version, main_file).values())
+                    if not controller_ready:
+                        session.log("error", f"Controller is not ready to run {name}.")
+                        return
+                else:
+                    device_ready = all(bashw.validate_node_setup(name, nodename, python_version, pip_version, main_file).values())
+                    if not device_ready:
+                        bashw.node_setup(device.name, name, nodename, python_version, pip_version, overwrite=True)
+                        device_ready = all(bashw.validate_node_setup(name, nodename, python_version, pip_version, main_file).values())
+                        if not device_ready:
+                            session.log("error", f"{device.name} is not ready to run {name}.")
+                            return
+        ports = [p.get("port") for p in param_dicts if p.get("port")]
+        if ports:
+            port = ports[0]
+            session.controller.open_fileserver("load_data_from", port)
+        else:
+            session.controller.open_fileserver("load_data_from")
+            
+        for p in sorted(param_dicts, key=lambda x: 1 if x["wait_for"] else 0):
+            if
+
+
+            param_dicts.append(params)
 
 
 # CLI is split up into submodules responsible for different operations, so
@@ -187,25 +271,34 @@ def device_ls(args):
     args: argparse.Namespace
         The arguments and options passed to the CLI.
     """
+    devices = session.device_mgr.tracr_devices
+    console = session.console
 
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Name")
+    table.add_column("Available")
+    table.add_column("Ready")
+    table.add_column("UUID")
+    table.add_column("Host")
 
-def device_refresh(args):
-    """
-    Updates known device information in the controller's local config file using the
-    current network state.
+    for d in devices:
+        name = d.name
+        available = (
+            "[bold green]Yes[/bold green]"
+            if d.is_available()
+            else "[bold red]No[/bold red]"
+        )
+        ready = (
+            "[bold green]Yes[/bold green]"
+            if d.is_setup()
+            else "[bold red]No[/bold red]"
+        )
+        uuid = str(d.id)
+        host = d.host
 
-    Called by the "tracr device refresh [-options]" command.
+        table.add_row(name, available, ready, uuid, host)
 
-    Parameters
-    ----------
-    args : argparse.Namespace
-        The parsed arguments from the command line
-        'silent' : bool
-            If True, the function will not print anything to the console
-        'remote_device' : bool
-            If True, the function will also update the remote device's config file
-    """
-    pass
+    console.print(table)
 
 
 def device_add(args):
@@ -236,6 +329,80 @@ def experiment_add(args):
     a 'blank slate' directory inside of TestCases.
     """
     pass
+
+
+def experiment_ls(args):
+    """
+    Displays the list of experiments that are currently available.
+    """
+    experiments = session.exp_mgr.experiments
+    console = session.console
+
+    main_table = Table(show_header=True, header_style="bold magenta")
+    main_table = Table(show_header=True, header_style="bold magenta", box=SQUARE)
+    main_table.add_column("Experiment Name")
+    main_table.add_column("Description")
+    main_table.add_column("Node Types")
+
+    for e in experiments:
+        name = e.name
+        description = e.main_config.getval("meta", "description")
+
+        # Create a new table for the node types
+        node_table = Table(show_header=True, header_style="bold cyan", box=SQUARE)
+        node_table.add_column("Name")
+        node_table.add_column("Environment")
+        node_table.add_column("Supported CPUs")
+        node_table.add_column("Dependencies")
+        node_table.add_column("Main File")
+
+        node_types = e.main_config.getval("nodes").get("types")
+        for key in node_types.keys():
+            nt_name = key
+            nt_env = (
+                f"Python: {node_types[key].get('environment').get('python_version')},"
+                + f"\nPip: {node_types[key].get('environment').get('pip_version')}"
+            )
+            nt_arch = ", ".join(node_types[key].get("supported_cpu_architectures"))
+            nt_deps = node_types[key].get("depends_on")
+            nt_main = node_types[key].get("main_file")
+
+            node_table.add_row(nt_name, nt_env, nt_arch, nt_deps, nt_main)
+
+        # Add the node table to the main table
+        main_table.add_row(name, description, node_table)
+
+    console.print(main_table)
+
+
+def experiment_run(args):
+    """
+    Runs an experiment.
+    """
+    exp_mgr = session.exp_mgr
+    console = session.console
+
+    name = args.name
+
+    if args.output:
+        pass
+
+    if args.preset:
+        # gather preset information
+        try:
+            exp = exp_mgr.get_experiment(name)
+        except ValueError:
+            session.log("warning", f"Experiment {name} not found.")
+            return
+        if not args.preset in exp.main_config.getval("runtime", "presets"):
+            session.log(
+                "warning",
+                f"Preset {args.preset} not found in experiment {name}.",
+            )
+            return
+        preset = exp.main_config.getval("runtime", "presets", args.preset)
+
+        session.controller.launch_experiment(name, preset=preset)
 
 
 def network(args):
@@ -285,25 +452,6 @@ def main(session: Session):
     device_subparsers = parser_device.add_subparsers(title="DEVICE MODULE COMMANDS")
     parser_device_ls = device_subparsers.add_parser("ls", help="List devices")
     parser_device_ls.set_defaults(func=device_ls)
-
-    parser_device_refresh = device_subparsers.add_parser(
-        "refresh", help="refresh known device information"
-    )
-    parser_device_refresh.add_argument(
-        "-s",
-        "--silent",
-        action="store_true",
-        help="do not print any output",
-        dest="silent",
-    )
-    parser_device_refresh.add_argument(
-        "-r",
-        "--remote",
-        help="update remote device config files",
-        action="store_true",
-        dest="remote_file",
-    )
-    parser_device_refresh.set_defaults(func=device_refresh)
 
     parser_device_add = device_subparsers.add_parser(
         "add", help="add new devices and configure them for experiments"
@@ -389,9 +537,11 @@ def main(session: Session):
         action="store_true",
         dest="settings",
     )
+    parser_experiment_ls.set_defaults(func=experiment_ls)
+
     parser_experiment_run = exp_subparsers.add_parser("run", help="run an experiment")
     parser_experiment_run.add_argument(
-        "name", nargs=1, help="the name of the experiment to be run"
+        "name", nargs=1, help="the name of the experiment to be run", dest="name"
     )
     parser_experiment_run.add_argument(
         "-l",
@@ -404,9 +554,17 @@ def main(session: Session):
         "-o",
         "--output",
         help="specify a location for performance logging output",
-        nargs=1,
+        nargs="?",
         dest="output",
     )
+    parser_experiment_run.add_argument(
+        "-p",
+        "--preset",
+        help="use a preset runtime config for this launch",
+        nargs="?",
+        dest="preset",
+    )
+    parser_experiment_run.set_defaults(func=experiment_run)
 
     parser_experiment_add = exp_subparsers.add_parser(
         "add", help="add a new experiment"

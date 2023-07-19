@@ -237,50 +237,23 @@ def validate_participant_setup(name: str, hostname_or_ip: str) -> dict:
     dict
         A dictionary describing the success/failure of each check
     """
-    ssh_config_script_filepath = (
+    script_filepath = (
         PROJECT_ROOT
         / "api"
         / "Scripts"
         / "setup"
-        / "src"
-        / "validate_participant_ssh_config"
-    )
-    sys_setup_script_filepath = (
-        PROJECT_ROOT
-        / "api"
-        / "Scripts"
-        / "setup"
-        / "src"
-        / "validate_participant_sys_setup"
+        / "participant"
+        / "validate_participant_setup"
     )
 
-    ssh_results = utils.run_bash_script_and_return_results(
-        ssh_config_script_filepath,
+    checks = ["participant_ready"]
+
+    return utils.run_bash_script_and_return_results(
+        script_filepath,
         [name, hostname_or_ip],
-        ["ssh_config_ok"],
+        checks,
         invert_bits=True,
     )
-    sys_checks = (
-        "tracr_user_exists",
-        "tracr_system_dependencies",
-        "ssh_enabled",
-        "pyenv_configuration",
-        "pyenv_shell_configs",
-        "data_dirs_exist",
-        "python_version_installation",
-        "python_package_installation",
-    )
-    sys_results = utils.run_bash_script_and_return_results(
-        sys_setup_script_filepath, [name, hostname_or_ip], sys_checks, invert_bits=True
-    )
-
-    # add granularity to permission errors
-    ssh_results["ssh_validation_script_permissions_ok"] = ssh_results["permission_ok"]
-    del ssh_results["permission_ok"]
-    sys_results["sys_validation_script_permissions_ok"] = sys_results["permission_ok"]
-    del sys_results["permission_ok"]
-    sys_results.update(ssh_results)
-    return sys_results
 
 
 if __name__ == "__main__":

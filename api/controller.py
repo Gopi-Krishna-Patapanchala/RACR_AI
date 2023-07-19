@@ -88,6 +88,12 @@ class Controller:
         """
         return all(bashw.validate_controller_setup(showprogress=showprogress).values())
 
+    def open_fileserver(self, directory, port=8000):
+        """
+        Opens that fileserver up there.
+        """
+        serve_files_over_http(directory, port)
+
 
 if __name__ == "__main__":
     if not len(sys.argv) == 3:
