@@ -5,6 +5,7 @@ import pathlib
 import uuid
 import paramiko
 import logging
+import concurrent.futures
 from contextlib import contextmanager
 
 import api.utils as utils
@@ -764,12 +765,26 @@ class DeviceManager:
         Populates self.tracr_devices with Device objects instantiated using data
         from the file at ~/.config/tracr/known_devices.json.
         """
-        device_data = self.get_tracr_devices()
 
-        for d in device_data:
-            device = Device(d["name"], self.ssh_config.lookup(d["name"]))
-            self.tracr_devices.append(device)
-            logger.info(f"Loaded device {device.name}.")
+        def create_device(device_info):
+            """
+            Instantiates a Device object using the provided device_info.
+            """
+            return Device(
+                device_info["name"], self.ssh_config.lookup(device_info["name"])
+            )
+
+        device_data = self.get_tracr_devices()
+        self.tracr_devices = []
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_device = {
+                executor.submit(create_device, d): d for d in device_data
+            }
+            for future in concurrent.futures.as_completed(future_to_device):
+                device = future.result()
+                self.tracr_devices.append(device)
+                logger.info(f"Loaded device {device.name}.")
 
 
 if __name__ == "__main__":

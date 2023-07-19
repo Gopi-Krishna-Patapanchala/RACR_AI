@@ -104,6 +104,7 @@ class ExperimentConfig(Config):
     default_template = {
         "meta": {
             "name": "",
+            "description": "",
             "date_created": "",
             "last_modified": "",
         },
@@ -313,12 +314,6 @@ class Experiment:
             pass
 
 
-class Launcher:
-    """
-    The Launcher class
-    """
-
-
 class ExperimentManager:
     """
     Manages a collection of experiments, allowing the user to create new
@@ -330,6 +325,10 @@ class ExperimentManager:
     experiment_dir: pathlib.Path
 
     def __init__(self, experiment_dir: pathlib.Path):
+        """
+        Validates the project directory and loads all experiments in the
+        specified directory. (As of right now, it's TestCases)
+        """
         # Catch bad input
         self.experiment_dir = experiment_dir
         if not isinstance(self.experiment_dir, pathlib.Path):
@@ -423,6 +422,12 @@ class ExperimentManager:
         for experiment in self.experiments:
             if experiment.name == name:
                 experiment.run(parameters)
+
+    def get_experiment(self, name):
+        for experiment in self.experiments:
+            if experiment.name == name:
+                return experiment
+        raise ValueError(f"Experiment {name} does not exist")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # information about this config file
 meta:
   name: ''
+  description: 'The original Alexnet split test designed by Nick Bovee'
   date_created: ''
   last_modified: ''
 
@@ -53,6 +54,41 @@ nodes:
 
 # overall experiment configuration
 runtime:
+  presets:
+    default:
+      Client:
+        run_on: any
+        num_instances: 1
+        output:
+          log_directory: Output
+          monitor_realtime: true
+        input:
+          dataset_path: Datasets/test
+          type: file_directory
+          loader: RemoteFileLoader
+          port: 8000
+        metrics:
+          latency: true
+          throughput: true
+          power_consumption: true
+      Remote:
+        run_on: controller
+        num_instances: 1
+        output:
+          log_directory: null
+          monitor_realtime: true
+        input:
+          dataset_path: null
+          type: null
+          loader: null
+          port: null
+        metrics:
+          latency: true
+          throughput: true
+          power_consumption: true
+      General:
+
+
   run_command_parameters:
   - NUM_CLIENTS
   - SPLIT_LAYER

@@ -1,5 +1,6 @@
 meta:
   name: ''
+  description: 'A basic experiment to serve as a template and test the experiment runner'
   date_created: ''
   last_modified: ''
 datasets:
