@@ -1,9 +1,13 @@
 import http.server
 import socketserver
+import oyaml
 import json
 import os
 import sys
 from pathlib import Path
+
+import api.utils as utils
+import api.bash_script_wrappers as bashw
 
 
 def serve_files_over_http(directory: Path, port: int = 8000):
@@ -46,6 +50,43 @@ def serve_files_over_http(directory: Path, port: int = 8000):
     with socketserver.TCPServer(("", port), handler) as httpd:
         print(f"serving files from {directory} at port {port}.")
         httpd.serve_forever()
+
+
+class Controller:
+    """
+    Represents the user's local machine. It is responsible for managing the
+    participating devices, hosting the file transfer server(s), and collecting
+    data about the experiment.
+    """
+
+    tracr_directory: Path = Path("~/.tracr/").expanduser()
+
+    def __init__(self):
+        pass
+
+    def get_settings(self, category: str = None):
+        """
+        Returns the settings for the specified category. If no category is
+        specified, returns all settings.
+        """
+        settings_fp = self.tracr_directory / "configs" / "settings.yaml"
+        if not settings_fp.exists():
+            raise FileNotFoundError(
+                "No settings file found. Use the bootstrap script to set up tracr."
+            )
+        with open(settings_fp, "r") as f:
+            settings = oyaml.safe_load(f)
+        if category:
+            return settings.get(category)
+        else:
+            return settings
+
+    def is_setup(self, showprogress: bool = False):
+        """
+        Returns True if tracr has been set up on the local machine, False
+        otherwise.
+        """
+        return all(bashw.validate_controller_setup(showprogress=showprogress).values())
 
 
 if __name__ == "__main__":

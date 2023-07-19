@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# This script validates the setup of a participant system. It is a wrapper for
+# executing the validate_participant_sys_setup script on a remote device on the
+# LAN using SSH.
+#
+# Usage: validate_participant_setup <target_host> <target_hostname>
+
+target_host="$1"
+target_hostname="$2"
+
+# Check if the user has provided the target host
+if [[ -z "$target_host" ]] || [[ -z "$target_hostname"]]; then
+    echo "Usage: $0 target_host target_hostname [-u]"
+    exit 1
+fi
+
+# Set path to inner scripts
+sys_setup_script_path="$(dirname "$(realpath "$0")")/../src/participant_sys_setup"
+validation_script_path="$(dirname "$(realpath "$0")")/../src/validate_participant_sys_setup"
+ssh_configuration_script_path="$(dirname "$(realpath "$0")")/../src/configure_ssh_for_participant"
+ssh_validation_script_path="$(dirname "$(realpath "$0")")/../src/validate_participant_ssh_config"
+
+# Check if the script files exist and are readable
+for script in "$sys_setup_script_path" "$validation_script_path" "$ssh_configuration_script_path" "$ssh_validation_script_path"; do
+    if [[ ! -f "$script" ]] || [[ ! -r "$script" ]]; then
+        echo "Error: script file '$script' does not exist or is not readable"
+        exit 1
+    fi
+done
+
+# Run the validation script on the remote host
+ssh -t "$target_host" "bash -s" -- < "$validation_script_path"
+exit_code1=$?
+
+# Run the SSH validation script on the local machine
+bash "$ssh_validation_script_path" $target_host $target_hostname
+exit_code2=$?
+
+# TODO: consolidate error bits so we can report all errors at once
+if [[ $exit_code1 -eq 0 ]] && [[ $exit_code2 -eq 0 ]]; then
+    echo "Validation script passed."
+    exit 0
+else
+    echo "Validation script failed."
+    exit 1
+fi
