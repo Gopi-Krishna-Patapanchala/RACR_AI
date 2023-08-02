@@ -181,7 +181,7 @@ class Device:
             If the device rejects the credentials.
         """
         # options common to both connection methods
-        connect_kwargs = {"username": self.user, "auth_timeout": 5}
+        connect_kwargs = {"username": self.user, "auth_timeout": 5, "timeout": 1}
 
         # if a private key is provided, use it
         if isinstance(self.pkey, pathlib.Path) and self.pkey.expanduser().exists():
@@ -560,11 +560,11 @@ class Device:
                         self.sftp.listdir()
                         self.close_connections()
                         return True
-                    except socket.gaierror:
+                    except (socket.gaierror, TimeoutError):
                         return False
                 self.close_connections()
                 return True
-            except socket.gaierror:
+            except (socket.gaierror, TimeoutError):
                 return False
         else:
             raise ValueError(
