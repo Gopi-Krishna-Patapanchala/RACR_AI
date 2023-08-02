@@ -6,7 +6,7 @@ the "api" folder on this repo.
 
 For a cleaner experience, add this directory to your PATH, which will allow
 you to run the CLI from anywhere, and without preceding the command with
-the word "python". (This is done automatically when you run the setup script.)
+the word "python".
 """
 
 import argparse
@@ -33,11 +33,14 @@ import api.controller as control
 import api.bash_script_wrappers as bashw
 
 
-# path to this file's location
+# path to root of tracr project
 PROJECT_ROOT = utils.get_tracr_root()
 
 # path to console text files
 CONSOLE_TXT_DIR = PROJECT_ROOT / "Assets" / "console_text"
+
+# path to the main logfile
+MAIN_LOG_FP = PROJECT_ROOT / "PersistentData" / "Logs" / "app.log"
 
 
 # logger setup
@@ -49,7 +52,7 @@ def setup_logging(verbosity):
     logger.setLevel(logging.DEBUG)
 
     # all messages will be logged to this file
-    file_handler = logging.FileHandler(Path("~/.tracr/logs/main.log").expanduser())
+    file_handler = logging.FileHandler(MAIN_LOG_FP.expanduser())
     file_handler.setLevel(logging.DEBUG)
 
     # only messages of the given level or higher will be logged to console

@@ -81,13 +81,6 @@ class Controller:
         else:
             return settings
 
-    def is_setup(self, showprogress: bool = False):
-        """
-        Returns True if tracr has been set up on the local machine, False
-        otherwise.
-        """
-        return all(bashw.validate_controller_setup(showprogress=showprogress).values())
-
     def open_fileserver(self, directory, port=8000):
         """
         Opens that fileserver up there.

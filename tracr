@@ -10,15 +10,25 @@
 #        locally-installed executable
 #
 # If the first and only positional argument is "setup", then the script will
-# run the setup sequence. Otherwise, the script will run the tracr application
-# with the given arguments.
+# run the setup sequence.
+# 
+# If the fist positional argument is "debug", the script will run the tracr
+# application normally using the rest of the arguments, but with the whole
+# repo mounted as a volume so that changes to the code are reflected without
+# having to rebuild the container.
+#
+# In all other cases, the script will run normally by running the container
+# and forwarding all args to the app.py script.
 
 
 # Get the repo root directory while also cd-ing into it
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
+# Predicate: do we run the container in debug mode?
+DEBUG=false
+
 # If the only positional argument is "setup", then run the setup sequence
-if [ $# -eq 1 ] && [ $1 == "setup" ]; then
+if [ $# -eq 1 ] && [[ $1 == "setup" ]]; then
 
     # Make sure permissions are set correctly on setup scripts
     chmod +x $DIR/Setup/System/*.sh
@@ -27,16 +37,44 @@ if [ $# -eq 1 ] && [ $1 == "setup" ]; then
     # Run the setup sequence and exit with its exit code
     $DIR/Setup/System/controller_setup.sh
     exit $?
+fi
 
-# Otherwise, pass all arguments (if any) to the tracr container
-else
+# If the first positional argument is "debug", then run the tracr application
+# with the given arguments, but with the code mounted as a volume so that
+# changes to the code are reflected in the container without rebuilding.
+if [[ $1 == "debug" ]]; then
 
-    # Validate setup before attempting to launch the container
-    if ! $DIR/Setup/System/validate_controller_setup.sh; then
-        echo "It looks like this machine has not been set up."
-        echo "Please run the setup sequence with the command 'tracr setup'."
-        exit 1
+    # Remove the first positional argument ("debug")
+    shift
+
+    # Set the DEBUG predicate
+    DEBUG=true
+
+fi
+
+# Validate setup before attempting to launch the container
+if ! $DIR/Setup/System/validate_controller_setup.sh; then
+    EXIT_CODE=$?
+    echo "It looks like this machine has not been set up."
+    echo "Please run the setup sequence with the command 'tracr setup'."
+    exit $EXIT_CODE
+fi
+
+# Are we running in debug mode?
+if $DEBUG; then
+
+    # Check whether the tracr-db image exists
+    if ! docker image inspect tracr-db &> /dev/null; then
+        # Build the tracr image if not
+        $DIR/Setup/Container/build_tracr.sh -d
     fi
+
+    # Run the tracr application with the given arguments, but with the code
+    # mounted as a volume so that changes to the code are reflected in the
+    # container without rebuilding.
+    docker run --rm -it --name tracr-db-runtime -v "$DIR:/RACR_AI" tracr-db "$@"
+
+else
 
     # Check whether the tracr image exists
     if ! docker image inspect tracr &> /dev/null; then
@@ -44,12 +82,11 @@ else
         $DIR/Setup/Container/build_tracr.sh
     fi
 
-    # Run the tracr application with the given arguments (only PersistentData
-    # will be included as a volume in prod, but for dev the code will be
-    # changing and we don't want to rebuild every time)
-    docker run --rm -it --name tracr-runtime -v "$DIR:/RACR_AI" tracr "$@"
-
-    # Exit with the exit code of the tracr application
-    exit $?
+    # Run the tracr application with the given arguments, in this case only
+    # mounting the PersistentData directory as a volume
+    docker run --rm -it --name tracr-runtime -v "$DIR/PersistentData:/RACR_AI/PersistentData" tracr "$@"
 
 fi
+
+# Exit with the exit code of the tracr application
+exit $?
