@@ -1,0 +1,46 @@
+meta:
+  name: ''
+  description: 'A basic experiment to serve as a template and test the experiment runner'
+  date_created: ''
+  last_modified: ''
+datasets:
+  directory: Datasets
+models:
+  directory: Models
+output:
+  directory: Output
+nodes:
+  directory: NodeTypes
+  types:
+    Client:
+      depends_on: Server
+      environment:
+        python_version: 3.6.15
+        pip_version: 21.3.1
+      main_file: main.py
+      requires_gpu: false
+      uses_gpu: false
+      supported_cpu_architectures:
+      - x86_64
+      - arm64
+      min_ram_mb: 1000
+      supports_multiple_instances: true
+      grpc_port: 50051
+    Server:
+      depends_on: null
+      environment:
+        python_version: 3.6.15
+        pip_version: 21.3.1
+      main_file: main.py
+      requires_gpu: false
+      uses_gpu: false
+      supported_cpu_architectures:
+      - x86_64
+      - arm64
+      min_ram_mb: 1000
+      supports_multiple_instances: false
+      grpc_port: 50051
+runtime:
+  run_command_parameters:
+  - NUM_CLIENTS
+  - SPLIT_LAYER
