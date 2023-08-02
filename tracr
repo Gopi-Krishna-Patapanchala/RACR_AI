@@ -19,23 +19,37 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # If the only positional argument is "setup", then run the setup sequence
 if [ $# -eq 1 ] && [ $1 == "setup" ]; then
+
     # Make sure permissions are set correctly on setup scripts
     chmod +x $DIR/Setup/System/*.sh
     chmod +x $DIR/Setup/Container/*.sh
-    # Run the setup sequence
+
+    # Run the setup sequence and exit with its exit code
     $DIR/Setup/System/controller_setup.sh
-    # Exit with the exit code of the setup sequence
     exit $?
+
+# Otherwise, pass all arguments (if any) to the tracr container
 else
+
+    # Validate setup before attempting to launch the container
+    if ! $DIR/Setup/System/validate_controller_setup.sh; then
+        echo "It looks like this machine has not been set up."
+        echo "Please run the setup sequence with the command 'tracr setup'."
+        exit 1
+    fi
+
     # Check whether the tracr image exists
     if ! docker image inspect tracr &> /dev/null; then
-        # Build the tracr image
+        # Build the tracr image if not
         $DIR/Setup/Container/build_tracr.sh
     fi
+
     # Run the tracr application with the given arguments (only PersistentData
     # will be included as a volume in prod, but for dev the code will be
     # changing and we don't want to rebuild every time)
-    docker run --rm -it --name tracr-runtime -v "$DIR:/app" tracr "$@"
+    docker run --rm -it --name tracr-runtime -v "$DIR:/RACR_AI" tracr "$@"
+
     # Exit with the exit code of the tracr application
     exit $?
+
 fi

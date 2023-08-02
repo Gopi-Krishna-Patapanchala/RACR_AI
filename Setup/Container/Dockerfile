@@ -7,8 +7,8 @@
 # No need to make a tiny image since (presumably) the user's PC is not a RPi3
 FROM python:3.11.4-bookworm
 
-# Set the working directory in the container to /app
-WORKDIR /app
+# Set the working directory in the container to /build (keep build data separate)
+WORKDIR /build
 
 # Install extra system dependencies
 COPY ./Setup/Container/tracr_dependencies.txt .
@@ -19,8 +19,12 @@ RUN bash -c "cat tracr_dependencies.txt | xargs apt-get install -y"
 COPY ./Setup/Container/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# New wdir for the app itself
+WORKDIR /RACR_AI
+
 # Copy over the API source code as well as the main app
-# COPY ./api ./api    Commented out until the API and app are finished. Till then... it's a volume
+# Commented out until the API and app are finished. Till then... it's a volume
+# COPY ./api ./api
 # COPY app.py .
 
 # Explicitly name the ports we'll have exposed (3 for now)

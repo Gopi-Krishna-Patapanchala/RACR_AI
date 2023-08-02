@@ -6,7 +6,7 @@ the "api" folder on this repo.
 
 For a cleaner experience, add this directory to your PATH, which will allow
 you to run the CLI from anywhere, and without preceding the command with
-the word "python".
+the word "python". (This is done automatically when you run the setup script.)
 """
 
 import argparse
