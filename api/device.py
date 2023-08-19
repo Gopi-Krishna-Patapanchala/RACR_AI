@@ -1,4 +1,9 @@
 import json
+import rpyc
+import numpy
+import torch
+import subprocess
+import oyaml
 import socket
 import getpass
 import pathlib
@@ -6,7 +11,10 @@ import uuid
 import paramiko
 import logging
 import concurrent.futures
+from rpyc.utils.zerodeploy import DeployedServer, MultiServerDeployment
 from contextlib import contextmanager
+from threading import Thread, Lock
+from plumbum import SshMachine
 
 import api.utils as utils
 import api.bash_script_wrappers as bashw
@@ -73,20 +81,20 @@ class Device:
 
     # the directory where configs are stored on remote devices
     remote_configs_dir: pathlib.Path = pathlib.Path("~/.tracr/device_info")
-
+    container_ssh_dir: pathlib.Path = pathlib.Path("/host_ssh")
+    name: str  # name of the device
     host: str  # IP address or hostname of the device
     user: str  # username to use when connecting to the device
     pkey: pathlib.Path  # path to private key file for the device
-    id: uuid.UUID  # UUID of the device
-
+    pkey_dir: pathlib.Path = pathlib.Path(
+        "/host_ssh"
+    )  # path to directory containing private key file in container
+    data_dir: pathlib.Path = pathlib.Path("~/.tracr")
+    participant_module_dir: pathlib.Path = utils.get_tracr_root() / "ParticipantModule"
+    permissions: tuple = ("744", "755")  # files, directories
+    rpc_port: int = 9000  # port number for RPC server
+    connected: bool = False  # whether or not the device is connected
     ssh: paramiko.SSHClient  # SSH client object used to connect to the device
-    sftp: paramiko.SFTPClient  # SFTP client object used to interact with filesystem
-
-    def __eq__(self, other):
-        """
-        Two devices are considered equal if they have the same UUID.
-        """
-        return self.id == other.id
 
     def __del__(self):
         """
@@ -94,7 +102,9 @@ class Device:
         """
         self.close_connections()
 
-    def __init__(self, name: str, config: paramiko.SSHConfigDict):
+    def __init__(
+        self, name: str, config: paramiko.SSHConfigDict, input_lock: Lock = None
+    ):
         """
         Usually instantiated by the DeviceManager, Device objects use data
         parsed from the `~/.ssh/config` file on the Controller device to
@@ -109,23 +119,14 @@ class Device:
         config: paramiko.SSHConfigDict
             The config block for the device, as parsed from the
             `~/.ssh/config` file on the Controller device.
-        id: str, default=""
-            The UUID of the device, as retrieved from the device itself or
-            the controller device's known_devices file in `~/.config/tracr/.
-            The value can be an empty string, a "temp" uuid (the string "temp"
-            + a real uuid string), or a real uuid string. If a real uuid string
-            is not provided, the device will attempt to retrieve its UUID from
-            the device itself. If this fails, a temporary UUID will be
-            assigned.
         """
         logger.info(f"Creating Device object for {name}")
 
         self.name = name
-        self.id = None
         self.host = config.get("hostname")
         self.user = config.get("user")
         self.pkey = (
-            pathlib.Path(config.get("identityfile")[0])
+            self.pkey_dir / pathlib.Path(config.get("identityfile")[0]).name
             if config.get("identityfile")
             else None
         )
@@ -146,30 +147,19 @@ class Device:
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        # if the device is unavailable, we can't do much verifying
-        if not self.is_available():
-            available = False
-            logger.info(
-                f"Device {name} is not available. " + "Will not attempt to verify UUID."
-            )
-        else:
-            available = True
-            # check if the device has been set up
-            if not self.is_setup():
-                logger.info(f"Device {name} is not set up")
-
-        # ask the device for its UUID
-        if available:
-            remote_uuid = self.get_remote_uuid()
-            if not remote_uuid:
-                self._assign_uuid()
-                remote_uuid = self.get_remote_uuid()
-                self.id = remote_uuid
-
         logger.info(f"Device {name} created successfully.")
+
+        # connect to it
+        try:
+            self._connect_to_ssh_client(input_lock=input_lock)
+        except paramiko.AuthenticationException:
+            logger.warning(f"Device {name} rejected credentials.")
+        except Exception as e:
+            logger.info(f"Device {name} unavailable: {e}")
+
         logger.debug(f"Device {name} attributes: {self.__dict__}")
 
-    def _connect_to_ssh_client(self):
+    def _connect_to_ssh_client(self, input_lock: Lock = None):
         """
         Connects to the SSH client object.
 
@@ -180,8 +170,12 @@ class Device:
         paramiko.ssh_exception.AuthenticationException
             If the device rejects the credentials.
         """
+        # idempotent
+        if self.connected and self.ssh_server_is_open():
+            return
+
         # options common to both connection methods
-        connect_kwargs = {"username": self.user, "auth_timeout": 5, "timeout": 1}
+        connect_kwargs = {"username": self.user, "auth_timeout": 2, "timeout": 2}
 
         # if a private key is provided, use it
         if isinstance(self.pkey, pathlib.Path) and self.pkey.expanduser().exists():
@@ -192,35 +186,35 @@ class Device:
         # otherwise, use password authentication and disable agents & key lookups
         else:
             connection_method = "password"
-            pw = getpass.getpass(f"\n\nEnter password for {self.user}@{self.host}: ")
-            print("")
-            connect_kwargs.update(
-                {
-                    "password": pw,
-                    "look_for_keys": False,
-                    "allow_agent": False,
-                }
-            )
+
+            def update_connect_kwargs(ckw):
+                pw = getpass.getpass(
+                    f"\n\nEnter password for {self.user}@{self.host}: "
+                )
+                print("")
+                ckw.update(
+                    {
+                        "password": pw,
+                        "look_for_keys": False,
+                        "allow_agent": False,
+                    }
+                )
+
+            if input_lock:
+                with input_lock:
+                    update_connect_kwargs(connect_kwargs)
+            else:
+                update_connect_kwargs(connect_kwargs)
 
         # attempt to connect to the device
         logger.info(
             f"Attempting to connect to device {self.name} using {connection_method}."
         )
         self.ssh.connect(self.host, **connect_kwargs)
+        self.connected = True
         logger.info(
             f"Successfully connected to device {self.name} using {connection_method}."
         )
-
-    def _connect_to_sftp_client(self):
-        if self.is_available(client="ssh"):
-            self._connect_to_ssh_client()
-            self.sftp = self.ssh.open_sftp()
-            logger.info(f"Device {self.name} connected to SFTP client.")
-        elif not self.is_available(client="ssh"):
-            logger.warning(
-                f"Device {self.name} is not available for SSH. "
-                + "Will not attempt to connect to SFTP client."
-            )
 
     @contextmanager
     def open_sftp_file(self, remote_path: pathlib.Path, mode: str):
@@ -246,9 +240,14 @@ class Device:
         paramiko.SFTPFile
         """
         try:
-            if not self.sftp or self.sftp.sock.closed:
-                self._connect_to_sftp_client()
-            file = self.sftp.file(str(remote_path), mode)
+            if self.connected:
+                file = self.ssh.open_sftp().file(
+                    str(self._expanduser_remote(remote_path)), mode
+                )
+            else:
+                raise DeviceUnavailableException(
+                    f"Cannot open file - Device {self.name} is not connected."
+                )
         except IOError as e:
             logger.warning(
                 f"Could not open file {remote_path} on device {self.name}: {e}"
@@ -263,17 +262,270 @@ class Device:
             finally:
                 file.close()
 
-    def is_setup(self) -> bool:
+    def run_ssh_command(self, command, success_message, failure_message):
+        try:
+            stdin, stdout, stderr = self.ssh.exec_command(command)
+            return_code = stdout.channel.recv_exit_status()
+            if return_code == 0:
+                logger.info(success_message)
+                return True
+            else:
+                logger.warning(failure_message)
+                return False
+        except Exception as e:
+            logger.warning(f"{failure_message}: {e}")
+            return False
+
+    def as_ssh_machine(self):
+        """
+        Returns a plumbum SshMachine object that can be used to initialize a zero-deploy
+        RPyC server on the device.
+        """
+        return SshMachine(self.host, user=self.user, keyfile=self.pkey)
+
+    def setup(self):
+        """
+        Installs the participant module on the device and creates the data directory
+        at ~/.tracr.
+        """
+        if not self.ssh_server_is_open():
+            raise DeviceUnavailableException(
+                f"Cannot setup device {self.name} - SSH server is not open."
+            )
+        if self.is_setup():
+            logger.info(f"Device {self.name} is already set up.")
+            return
+
+        def update_results(results, key, status):
+            results[key] = status
+
+        results = {
+            "data_dir": False,
+            "copy_module": False,
+            "prepare_apt": False,
+            "install_packages": False,
+            "install_pyenv": False,
+            "configure_pyenv": False,
+            "configure_venv": False,
+        }
+
+        # create the data directory
+        try:
+            self._remote_mkdir(self.data_dir)
+            success = True
+        except Exception as e:
+            logger.warning(f"Could not create data directory: {e}")
+            success = False
+        update_results(results, "data_dir", success)
+        logger.info(
+            f"{'Created' if success else 'Failed to create'} data directory {self.data_dir} on device {self.name}."
+        )
+
+        # copy over the participant module and set permissions
+        try:
+            self.recursive_copy(
+                self.participant_module_dir, self.data_dir / "ParticipantModule"
+            )
+            success = True
+        except Exception as e:
+            logger.warning(f"Could not copy participant module: {e}")
+            success = False
+        update_results(results, "copy_module", success)
+
+        # Other actions
+        update_results(results, "prepare_apt", self._prepare_apt())
+        update_results(results, "install_packages", self._install_packages())
+        update_results(results, "install_pyenv", self._install_pyenv())
+        update_results(results, "configure_pyenv", self._configure_pyenv())
+        update_results(results, "configure_venv", self._configure_venv())
+
+        return results
+
+    def _configure_venv(self):
+        script_fp = (
+            self.data_dir / "ParticipantModule" / "Scripts" / "configure_venv.sh"
+        )
+        return self.run_ssh_command(
+            f"sudo {script_fp}",
+            f"Configured virtual environment on device {self.name}.",
+            f"Could not configure virtual environment on device {self.name}",
+        )
+
+    def recursive_copy(
+        self,
+        local_directory: pathlib.Path,
+        remote_directory: pathlib.Path,
+        dir_perms: int = 0o755,
+        file_perms: int = 0o744,
+    ):
+        def sftp_copy(sftp, local_path, remote_path):
+            # Create the remote directory including parents if not exists
+            try:
+                if not self._remote_path_exists(remote_path):
+                    logger.debug(
+                        f"Creating remote directory {remote_path} on {self.name}."
+                    )
+                    sftp.mkdir(str(remote_path), mode=dir_perms)
+            except IOError:
+                logger.debug(
+                    f"Caught IOError when creating remote directory {remote_path} on {self.name}."
+                )
+                pass
+
+            # Iterate through local directory
+            for item in local_path.iterdir():
+                remote_item = str(remote_path) + "/" + item.name
+                logger.debug(f"Copying {item} to {remote_item} on {self.name}.")
+
+                # Check if it's a file or directory
+                if item.is_file():
+                    logger.debug(
+                        f"Copying file {item} to {remote_item} on {self.name}."
+                    )
+                    sftp.put(str(item), remote_item)
+                    logger.debug(
+                        f"Setting permissions on {remote_item} on {self.name}."
+                    )
+                    sftp.chmod(remote_item, mode=file_perms)
+                    logger.info(f"Copied file {item} to {remote_item} on {self.name}.")
+
+                elif item.is_dir():
+                    logger.debug(f"Recursing into directory {item} on {self.name}.")
+                    sftp_copy(sftp, item, remote_item)  # Recursively copy the directory
+
+        if not self.ssh_server_is_open():
+            raise DeviceUnavailableException(
+                f"Cannot recursively copy to device {self.name} - SSH server is not open."
+            )
+
+        # expand user
+        remote_directory = self._expanduser_remote(remote_directory)
+
+        # Create the SFTP client
+        logger.info(f"Opening SFTP client on device {self.name}.")
+        sftp_client = self.ssh.open_sftp()
+
+        # Create the root directory if it doesn't exist
+        if not self._remote_path_exists(remote_directory):
+            logger.debug(
+                f"Creating remote directory {remote_directory} on {self.name} with permissions {oct(dir_perms)}."
+            )
+            sftp_client.mkdir(str(remote_directory), mode=dir_perms)
+        else:
+            logger.debug(
+                f"Remote directory {remote_directory} already exists on {self.name}."
+            )
+
+        # Start the recursive copy
+        sftp_copy(sftp_client, local_directory, remote_directory)
+
+        # Close the SFTP client
+        sftp_client.close()
+        logger.info(f"Closed SFTP client on device {self.name}.")
+
+    def _configure_pyenv(self):
+        script_fp = (
+            self.data_dir / "ParticipantModule" / "Scripts" / "configure_pyenv.sh"
+        )
+        return self.run_ssh_command(
+            f"sudo {script_fp}",
+            f"Configured pyenv on device {self.name}.",
+            f"Could not configure pyenv on device {self.name}",
+        )
+
+    def _install_pyenv(self):
+        script_fp = self.data_dir / "ParticipantModule" / "Scripts" / "install_pyenv.sh"
+        return self.run_ssh_command(
+            f"sudo {script_fp}",
+            f"Installed pyenv on device {self.name}.",
+            f"Could not install pyenv on device {self.name}",
+        )
+
+    def _install_packages(self):
+        script_fp = (
+            self.data_dir
+            / "ParticipantModule"
+            / "Scripts"
+            / "install_participant_sys_deps.sh"
+        )
+        return self.run_ssh_command(
+            f"sudo {script_fp}",
+            f"Installed packages on device {self.name}.",
+            f"Could not install packages on device {self.name}",
+        )
+
+    def _prepare_apt(self):
+        script_fp = (
+            self.data_dir
+            / "ParticipantModule"
+            / "Scripts"
+            / "update_upgrade_clean_apt.sh"
+        )
+        return self.run_ssh_command(
+            f"sudo {script_fp}",
+            f"Prepared apt on device {self.name}.",
+            f"Could not prepare apt on device {self.name}",
+        )
+
+    def is_setup(self, suppress=False) -> bool:
         """
         Returns True if the device is setup, False otherwise. A device is
-        considered setup if it has a config directory at ~/.config/tracr.
+        considered setup if its RPC server can be reached and calls are working
+        as expected.
 
         Returns:
         --------
         bool
         """
-        check_results = bashw.validate_participant_setup(self.name, self.host)
-        return all(check_results.values())
+        if not self.ssh_server_is_open():
+            if suppress:
+                return False
+            else:
+                raise DeviceUnavailableException(
+                    f"Cannot validate setup - Device {self.name} is not available."
+                )
+        try:
+            return self.rpc_mm_test()
+        except Exception as e:
+            if suppress:
+                print(e)
+                return False
+            else:
+                raise e
+
+    def start_rpc_server(self, port: int = 9000):
+        if not self.ssh_server_is_open():
+            raise DeviceUnavailableException(
+                f"Cannot start RPC server - Device {self.name} is not available."
+            )
+        stdin, stdout, stderr = self.ssh.exec_command(
+            f"cd {self.data_dir / 'ParticipantModule' / 'Scripts'} && ./start_rpc.sh {port}"
+        )
+        error = stderr.read().decode()
+        if error:
+            raise Exception(
+                f"Could not start RPC server on device {self.name}: {error}"
+            )
+        else:
+            logger.info(f"Started RPC server on port {port} on device {self.name}.")
+
+    def rpc_mm_test(self) -> bool:
+        """
+        Tests the RPC server by calling a basic torch.mm procedure and checking
+        the results.
+        """
+        logger.info(f"Testing RPC server on device {self.name}.")
+        connection = rpyc.connect(self.host, self.rpc_port)
+        logger.info(f"Connected to RPC server on device {self.name}.")
+
+        # Test a basic torch.mm call
+        a = torch.tensor([[1, 2], [3, 4]])
+        b = torch.tensor([[1, 2], [3, 4]])
+        logger.info(f"Calling torch.mm on device {self.name}.")
+        ret = connection.root.tensor_mm(a, b)
+        logger.info(f"Received torch.mm result from device {self.name}.")
+
+        return torch.all(torch.eq(ret, torch.mm(a, b)))
 
     def _expanduser_remote(self, path: pathlib.Path) -> pathlib.Path:
         """
@@ -283,59 +535,6 @@ class Device:
         expanded = pathlib.Path(str(path).replace("~", f"/home/{self.user}"))
         logger.debug(f"Device {self.name} expanded path {path} to {expanded}.")
         return expanded
-
-    def get_remote_uuid(self) -> uuid.UUID | None:
-        """
-        Attempts to get the device's UUID from its ~/.config/tracr/my_uuid.txt
-        file, returning None if the file does not exist.
-
-        Returns:
-        --------
-        uuid.UUID | None
-
-        Raises:
-        -------
-        DeviceUnavailableException
-            If the device is not available.
-        MissingSetupException
-            If the device's config directory is missing
-        MalformedUUIDException
-            If the UUID file exists but does not contain a valid UUID.
-        """
-        # Raise an exception if the device is not available
-        if not self.is_available():
-            logger.info(f"Device {self.name} is not available. Cannot get UUID.")
-            return None
-
-        # Expand the remote path to match the remote user's home directory
-        uuid_path = self._expanduser_remote(
-            pathlib.Path(Device.remote_configs_dir / "my_uuid.txt")
-        )
-
-        # Check if the config directory exists on the device
-        if not self._remote_path_exists(uuid_path.parent):
-            logger.info(f"Device {self.name} is not setup. Cannot get UUID.")
-            return None
-
-        # Check if the UUID file exists on the device
-        if not self._remote_path_exists(uuid_path):
-            logger.info(
-                f"Device {self.name} does not have a UUID file. Cannot get UUID."
-            )
-            return None
-
-        # Read the UUID file as string
-        uuid_str = self._get_remote_file_contents(uuid_path).strip()
-
-        # Attempt to convert the string to a UUID and return
-        try:
-            return uuid.UUID(uuid_str)
-        except ValueError:
-            logger.warning(
-                f"Device {self.name} has a malformed UUID file. "
-                + f"Cannot return UUID."
-            )
-            return None
 
     def _get_remote_file_contents(self, remote_path: pathlib.Path) -> str:
         """
@@ -361,7 +560,7 @@ class Device:
             If the file does not exist on the device.
         """
         # Raise an exception if the device is not available
-        if not self.is_available():
+        if not self.ssh_server_is_open():
             raise DeviceUnavailableException(
                 f"Device {self.name} is not available. Cannot get file contents."
             )
@@ -376,7 +575,7 @@ class Device:
             )
 
         # Read the file, decode, and return
-        with self.open_sftp_file(true_path, "r") as file:
+        with self.ssh.open_sftp().file(true_path, "r") as file:
             return file.read().decode()
 
     def _remote_mkdir(self, remote_path: pathlib.Path):
@@ -397,7 +596,7 @@ class Device:
             If the device is not available.
         """
         # Raise an exception if the device is not available
-        if not self.is_available():
+        if not self.ssh_server_is_open():
             raise DeviceUnavailableException(
                 f"Device {self.name} is not available. "
                 + f"Cannot create directory {remote_path}."
@@ -407,21 +606,25 @@ class Device:
         true_path = self._expanduser_remote(remote_path)
 
         # Create the directory, recursively creating parent dirs as needed
-        try:
-            parts = str(true_path).split("/")
-            for i in range(len(parts)):
-                current_path = "/".join(parts[: i + 1])
-                try:
-                    self.sftp.listdir(current_path)  # Test if path exists
-                except IOError:  # Path does not exist
-                    self.sftp.mkdir(current_path)
-        except Exception as e:
-            logger.warning(
-                f"Could not create directory {true_path} on device {self.name}: {e}"
-            )
-            raise e
-        else:
-            logger.info(f"Created directory {true_path} on device {self.name}.")
+        sftp = self.ssh.open_sftp()
+        logger.debug(f"sftp opened for device {self.name}.")
+        parts = str(true_path).split("/")
+        if parts[0] == "":
+            parts = parts[1:]
+            parts[0] = "/" + parts[0]
+        logger.debug(f"Split path {true_path} into parts {parts}.")
+        for i in range(len(parts)):
+            current_path = "/".join(parts[: i + 1])
+            try:
+                logger.debug(f"Trying to listdir {current_path} on device {self.name}.")
+                sftp.listdir(current_path)  # Test if path exists
+            except (IOError, FileNotFoundError):  # Path does not exist
+                logger.debug(
+                    f"sftp listdir failed, trying to mkdir {current_path} on device {self.name}."
+                )
+                sftp.mkdir(current_path)
+        sftp.close()
+        logger.info(f"Created directory {true_path} on device {self.name}.")
 
     def _remote_path_exists(self, remote_path: pathlib.Path) -> bool:
         """
@@ -445,7 +648,7 @@ class Device:
             If the device is not available.
         """
         # Raise an exception if the device is not available
-        if not self.is_available():
+        if not self.ssh_server_is_open():
             raise DeviceUnavailableException(
                 f"Device {self.name} is not available. "
                 + f"Cannot check if path {remote_path} exists."
@@ -456,9 +659,8 @@ class Device:
 
         # Check if the file or directory exists
         try:
-            self._connect_to_sftp_client()
-            self.sftp.stat(str(true_path))
-            self.close_connections()
+            sftp = self.ssh.open_sftp()
+            sftp.stat(str(true_path))
             return True
         except IOError:
             return False
@@ -467,8 +669,9 @@ class Device:
                 f"Could not check if path {true_path} exists "
                 + f"on device {self.name}: {e}"
             )
-            self.close_connections()
             raise e
+        finally:
+            sftp.close()
 
     def close_connections(self):
         """
@@ -476,48 +679,8 @@ class Device:
         """
         try:
             self.ssh.close()
-            self.sftp.close()
         except Exception as e:
             pass
-
-    def _assign_uuid(self):
-        """
-        Creates a new UUID for the device and saves it to the device's
-        ~/.config/tracr/my_uuid.txt file. To avoid conflicts, this method
-        does not allow existing UUIDs to be overwritten.
-
-        Raises:
-        -------
-        DeviceUnavailableException
-            If the device is not available.
-        MissingSetupException
-            If the device is missing its config directory.
-        """
-        # Raise an exception if the device is not available
-        if not self.is_available():
-            raise DeviceUnavailableException(
-                f"Device {self.name} is not available. Cannot assign UUID."
-            )
-
-        # get the path to the config dir on the device
-        remote_config_dir = self._expanduser_remote(Device.remote_configs_dir)
-
-        # Raise an exception if the device is missing its config directory
-        if not self._remote_path_exists(remote_config_dir):
-            raise MissingSetupException(
-                f"Device {self.name} is missing its config directory. "
-                + f"Cannot assign UUID."
-            )
-
-        # Write the my_uuid.txt file with "x" flag to prevent overwriting
-        try:
-            with self.open_sftp_file(remote_config_dir / "my_uuid.txt", "x") as f:
-                f.write(str(uuid.uuid4()))
-                logger.info(f"Assigned UUID to device {self.name}.")
-        except OSError:
-            raise UUIDExistsException(
-                f"Device {self.name} already has a UUID. Cannot overwrite UUID."
-            )
 
     def to_dict(self, type: str) -> dict:
         """
@@ -540,7 +703,7 @@ class Device:
         logger.debug(f"Converted device {self.name} to dict: {result}")
         return result
 
-    def is_available(self, client: str = "ssh") -> bool:
+    def ssh_server_is_open(self) -> bool:
         """
         Returns True if the specified client is available, False otherwise.
 
@@ -549,28 +712,15 @@ class Device:
         client: str, default "ssh"
             The client to check. Must be either "ssh" or "sftp".
         """
-        client = client.strip().lower()
-        if client == "ssh" or client == "sftp":
-            try:
-                self._connect_to_ssh_client()
-                self.ssh.exec_command("echo")
-                if client == "sftp":
-                    try:
-                        self._connect_to_sftp_client()
-                        self.sftp.listdir()
-                        self.close_connections()
-                        return True
-                    except (socket.gaierror, TimeoutError):
-                        return False
-                self.close_connections()
-                return True
-            except (socket.gaierror, TimeoutError):
-                return False
-        else:
-            raise ValueError(
-                "Device.is_available takes only"
-                + f"'ssh' or 'sftp' as arguments, not {client}."
-            )
+        if not self.connected:
+            return False
+        try:
+            self.ssh.exec_command("echo", timeout=1)
+            return True
+        except Exception as e:
+            self.connected = False
+            logger.info(f"Device {self.name} is not available: {e}")
+            return False
 
 
 class DeviceManager:
@@ -581,67 +731,96 @@ class DeviceManager:
     objects which control authentication and connection behavior.
     """
 
-    # the path to the controller's config file directory
-    config_dir = pathlib.Path("~/.tracr").expanduser()
+    # the path to the host machine's SSH config file
+    ssh_config_dir: pathlib.Path = pathlib.Path("/host_ssh")
+
+    # the path to the settings.yaml file
+    settings_path: pathlib.Path = (
+        utils.get_tracr_root() / "PersistentData" / "Configs" / "settings.yaml"
+    )
+
+    # ssh config objects for lookups
+    ssh_config: paramiko.SSHConfig = paramiko.SSHConfig()
+
+    # stores a list of Device objects
+    devices: list = []
 
     def __init__(self):
-        self.tracr_devices = []
-
-        self.ssh_config = paramiko.SSHConfig()
-        with open(pathlib.Path("~/.ssh/config").expanduser(), "r") as ssh_config_file:
+        # parse the SSH config file
+        with open(self.ssh_config_dir / "config", "r") as ssh_config_file:
             self.ssh_config.parse(ssh_config_file)
 
-        self.tracr_devices = self.get_tracr_devices()
-        self.load_tracr_devices()
+        # create a list of Device objects for all known devices
+        self.load_known_devices()
 
-    def get_tracr_devices(self) -> list:
+    def load_known_devices(self):
         """
-        Parses the ~/.ssh/config file and returns a list of Hosts with their
-        "User" directive set to "tracr". This is used to determine which hosts
-        are available for tracr to connect to.
+        Loads the known devices from the settings.yaml file. Idempotent.
         """
-        # Create a list to hold matching hosts
-        matching_hosts = []
 
-        # Loop through the hosts in the configuration
-        for host in self.ssh_config.get_hostnames():
-            # Get the configuration for this host
-            host_config = self.ssh_config.lookup(host)
+        def add_device(known_device_name, devices_list, ssh_config, input_lock):
+            if ssh_config.lookup(known_device_name).get("hostname") is not None:
+                logger.info(
+                    f"Adding Device object for {known_device_name} to the list."
+                )
+                devices_list.append(
+                    Device(
+                        known_device_name,
+                        ssh_config.lookup(known_device_name),
+                        input_lock=input_lock,
+                    )
+                )
+            else:
+                raise ValueError(f"Device {known_device_name} is not a valid device.")
 
-            # If the username matches, add the host to the list
-            if host_config.get("user") == "tracr":
-                matching_hosts.append(host_config)
+        threads = []
+        password_lock = Lock()
 
-        for host in matching_hosts:
-            host["name"] = pathlib.Path(host.get("identityfile")[0]).stem
-
-        return matching_hosts
-
-    def get_known_devices(self):
-        """
-        Returns a list of known device info dicts from the file at
-        ~/.config/tracr/known_devices.json, or None if the file does not exist.
-
-        Returns:
-        --------
-        list[dict] or None
-        """
-        try:
-            with open(self.known_device_filepath, "r") as f:
-                devices_data = json.load(f)
-            logger.debug(
-                f"Successfully retrieved known devices from {self.known_device_filepath}."
+        for known_device_name in self.get_known_device_names():
+            # skip devices that are already in the list
+            if self.get_devices_by(name=known_device_name):
+                logger.debug(f"Device {known_device_name} is already in the list.")
+                continue
+            # create a thread to add the device to the list
+            thread = Thread(
+                target=add_device,
+                args=(known_device_name, self.devices, self.ssh_config, password_lock),
             )
-            return devices_data
-        except FileNotFoundError:
+            threads.append(thread)
+            thread.start()
+
+        # wait for all threads to complete
+        for thread in threads:
+            thread.join()
+
+    def deploy_rpc_services(self):
+        """
+        Uses RPyC's zero-deploy feature to deploy the RPyC services on all devices
+        that are currently connectable.
+        """
+        available_devices = [
+            dev.as_ssh_machine() for dev in self.get_devices_by(ssh_server_is_open=True)
+        ]
+        if not available_devices:
+            logger.warning("No devices are currently available.")
+            return
+        logger.info(f"Deploying RPyC services to {len(available_devices)} devices.")
+
+        dep = MultiServerDeployment(available_devices)
+        dep2 = DeployedServer()
+
+    def get_known_device_names(self) -> list:
+        """
+        Returns a list of the known devices saved in settings.yaml
+        """
+        with open(self.settings_path, "r") as settings_file:
+            settings = oyaml.safe_load(settings_file)
+        known_device_names = list(settings.get("Known_Devices", []))
+        if not known_device_names:
             logger.warning(
-                f"No file found at {self.known_device_filepath}. "
-                + "Has this device been set up?"
+                "No known devices found in settings.yaml. Use `tracr device add` to add a device."
             )
-            raise MissingSetupException(
-                f"No file found at {self.known_device_filepath}. "
-                + " To set up the controller, use `tracr setup`."
-            )
+        return known_device_names
 
     def add_device(self, name: str):
         """
@@ -662,30 +841,29 @@ class DeviceManager:
         # "lookup" returns a dict containing "hostname" : name for any name, so
         # we need to check that it's not missing something important
         if not dev_config.get("user"):
-            logger.warning(
+            raise ValueError(
                 f"No user specified in lookup for {name}. "
                 + f"Please check your ~/.ssh/config file to ensure {name} is listed."
             )
-            return
 
-        new_device = Device(name, dev_config)
+        # Add the device to the known devices list
+        with open(self.settings_path, "r") as settings_file:
+            settings = oyaml.safe_load(settings_file)
+        if not settings.get("Known_Devices"):
+            logger.info("Creating list of known devices in settings.yaml")
+            settings["Known_Devices"] = []
+        if name not in settings["Known_Devices"]:
+            settings["Known_Devices"].append(name)
+            with open(self.settings_path, "w") as settings_file:
+                logger.info(f"Adding device {name} to settings.yaml")
+                oyaml.safe_dump(settings, settings_file)
 
-        known_devs = self.get_known_devices()
-        known_ids = [d["id"] for d in known_devs]
-        known_names = [d["name"] for d in known_devs]
-
-        if new_device.id in known_ids or new_device.name in known_names:
-            logger.warning(f"Device {name} is already in known devices.")
-            return
-
-        # make sure self.tracr_devices is up to date, then add the new device and save
-        self.load_tracr_devices()
-        self.tracr_devices.append(new_device)
-        self.save_devices()
+        # update the device list
+        self.load_known_devices()
 
     def remove_device(self, name: str):
         """
-        Removes a device from the self.tracr_devices list and the user's
+        Removes a device from the self.devices list and the user's
         `~/.config/tracr/known_devices.json` file.
 
         Parameters:
@@ -702,12 +880,24 @@ class DeviceManager:
                 f"Multiple devices found with name {name}. Cannot remove device."
             )
 
-        self.tracr_devices.remove(matching_devs[0])
-        self.save_devices()
+        dev_to_remove = matching_devs[0]
+        self.devices.remove(dev_to_remove)
+
+        with open(self.settings_path, "r") as settings_file:
+            settings = oyaml.safe_load(settings_file)
+        if name in settings["Known_Devices"]:
+            settings["Known_Devices"].remove(dev_to_remove.name)
+            with open(self.settings_path, "w") as settings_file:
+                logger.info(f"Removing device {name} from settings.yaml")
+                oyaml.safe_dump(settings, settings_file)
+        else:
+            logger.warning(
+                f"Device {name} not found in settings.yaml. No device removed."
+            )
 
     def get_devices_by(self, **kwargs) -> list:
         """
-        Returns filtered list of self.tracr_devices according to the key, value
+        Returns filtered list of self.devices according to the key, value
         pairs specified in the kwargs. For example, if you want to get all
         devices with a certain user, you would call this function like so:
             ```
@@ -739,7 +929,7 @@ class DeviceManager:
         ValueError
             If the kwargs are invalid.
         """
-        result = self.tracr_devices
+        result = self.devices
 
         for key, value in kwargs.items():
             new_result = []
@@ -759,32 +949,6 @@ class DeviceManager:
 
     def discover_devices(self):
         pass  # Implement device discovery
-
-    def load_tracr_devices(self):
-        """
-        Populates self.tracr_devices with Device objects instantiated using data
-        from the file at ~/.config/tracr/known_devices.json.
-        """
-
-        def create_device(device_info):
-            """
-            Instantiates a Device object using the provided device_info.
-            """
-            return Device(
-                device_info["name"], self.ssh_config.lookup(device_info["name"])
-            )
-
-        device_data = self.get_tracr_devices()
-        self.tracr_devices = []
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_device = {
-                executor.submit(create_device, d): d for d in device_data
-            }
-            for future in concurrent.futures.as_completed(future_to_device):
-                device = future.result()
-                self.tracr_devices.append(device)
-                logger.info(f"Loaded device {device.name}.")
 
 
 if __name__ == "__main__":

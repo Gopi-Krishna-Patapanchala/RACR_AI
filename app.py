@@ -99,20 +99,13 @@ class Session:
             self.console = Console()
             self.controller = control.Controller()
 
-            # check whether the controller has been setup
-            if not self.controller.is_setup(showprogress=True):
-                self.print(
-                    f"Your machine is not yet set up as a tracr controller. "
-                    + f"Run the bootstrap script to get started.",
-                    style="bold red",
-                )
-                sys.exit(1)
-
             # set up the logger according to the user's verbosity setting
             verbosity = self.controller.get_settings("Preferences").get("verbosity", 2)
             self.logger = setup_logging(verbosity)
             self.device_mgr = dev.DeviceManager()
-            self.exp_mgr = exp.ExperimentManager(PROJECT_ROOT / "TestCases")
+            self.exp_mgr = exp.ExperimentManager(
+                PROJECT_ROOT / "PersistentData" / "TestCases"
+            )
         else:
             self.logger = None
             self.console = None
@@ -145,7 +138,9 @@ class Session:
 
     def print(self, message, **kwargs):
         """
-        Prints a message to the console, using the session's console.
+        Prints a message to the console, using the session's console. It's
+        just a convenience method for rich.Console.print(), so it accepts
+        the same kwargs.
         """
         if not self.console:
             raise RuntimeError(
@@ -168,7 +163,7 @@ def launch_experiment(name, session: Session, preset=None, **kwargs):
             num_devices = specs["num_devices"]
             if specs["run_on"] == "any":
                 devices = session.device_mgr.get_devices_by(
-                    is_available=True, is_setup=True
+                    ssh_server_is_open=True, is_setup=True
                 )[:num_devices]
             elif specs["run_on"] == "controller":
                 devices = [session.controller]
@@ -294,51 +289,74 @@ def device_ls(args):
     args: argparse.Namespace
         The arguments and options passed to the CLI.
     """
-    devices = session.device_mgr.tracr_devices
+    devices = session.device_mgr.devices
     console = session.console
 
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Name")
-    table.add_column("Available")
-    table.add_column("Ready")
-    table.add_column("UUID")
+    table.add_column("SSH Server Up")
+    table.add_column("RPC Server Up")
     table.add_column("Host")
 
     for d in devices:
         name = d.name
         available = (
             "[bold green]Yes[/bold green]"
-            if d.is_available()
+            if d.ssh_server_is_open()
             else "[bold red]No[/bold red]"
         )
         ready = (
             "[bold green]Yes[/bold green]"
-            if d.is_setup()
+            if d.is_setup(suppress=True)
             else "[bold red]No[/bold red]"
         )
-        uuid = str(d.id)
         host = d.host
 
-        table.add_row(name, available, ready, uuid, host)
+        table.add_row(name, available, ready, host)
 
     console.print(table)
 
 
 def device_add(args):
-    if args.wizard:
-        pass
-    if args.host:
-        pass
-    if args.user:
-        pass
-    if args.pw:
-        pass
-    if args.keys:
-        pass
-    if args.nickname:
-        pass
-    if args.description:
-        pass
+    for name in args.name:
+        try:
+            session.device_mgr.add_device(name)
+        except ValueError:
+            session.log(
+                "warning",
+                f"Device {name} not present in ~/.ssh/config, so could not be added.",
+            )
+
+
+def device_rm(args):
+    for name in args.name:
+        try:
+            session.device_mgr.remove_device(name)
+        except ValueError:
+            session.log("warning", f"Device {name} not found, nothing to remove.")
+
+
+def device_setup(args):
+    # make sure that the user has specified at least one device to setup
+    if args.name and args.all:
+        session.log("error", "Cannot specify both a device name and the --all option.")
+        return
+
+    # for each device, check if the user wants to run setup on it
+    for device in session.device_mgr.devices:
+        if args.name and device.name not in args.name:
+            session.log("debug", f"Skipping setup for {device.name}.")
+            continue
+        # then check if we're validating or actually running setup
+        if args.validate:
+            s = device.is_setup(suppress=True)
+            session.console.print(
+                f"{device.name} Setup Status: {'[bold green]Yes[/bold green]' if s else '[bold red]No[/bold red]'}"
+            )
+        else:
+            session.log("info", f"Setting up {device.name}...")
+            device.setup()
+            session.log("info", f"Finished setting up {device.name}.")
 
 
 ##############################################################################
@@ -453,7 +471,7 @@ def setup(args):
         print("Running setup")
 
 
-def main(session: Session):
+def main():
     parser = argparse.ArgumentParser(
         description=utils.get_text(CONSOLE_TXT_DIR / "tracr_description.txt"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -467,68 +485,65 @@ def main(session: Session):
     ),
     subparsers = parser.add_subparsers(title="SUBMODULES")
 
-    # parser for "device"
+    # parser for "device" submodule
     parser_device = subparsers.add_parser(
         "device", help="Local device setup and configuration"
     )
     # add sub-sub parsers for the device module
     device_subparsers = parser_device.add_subparsers(title="DEVICE MODULE COMMANDS")
+
+    # parser for the "device ls" command
     parser_device_ls = device_subparsers.add_parser("ls", help="List devices")
     parser_device_ls.set_defaults(func=device_ls)
 
+    # parser for the "device add" command
     parser_device_add = device_subparsers.add_parser(
         "add", help="add new devices and configure them for experiments"
     )
     parser_device_add.add_argument(
-        "-w",
-        "--wizard",
-        action="store_true",
-        help="use a wizard to help with adding the new device",
-        dest="wizard",
-    )
-    parser_device_add.add_argument(
-        "-a",
-        "--host",
-        help="specify the hostname or IP address of the device to add",
-        nargs=1,
-        dest="host",
-    )
-    parser_device_add.add_argument(
-        "-u",
-        "--user",
-        help="specify the username to connect with via SSH",
-        nargs=1,
-        dest="user",
-    )
-    parser_device_add.add_argument(
-        "-p",
-        "--pass",
-        help="specify the password for SSH connections to the device",
-        nargs=1,
-        dest="pw",
-    )
-    parser_device_add.add_argument(
-        "-k",
-        "--keys",
-        help="specify the public and private keys, separated by a space",
-        nargs=2,
-        dest="keys",
-    )
-    parser_device_add.add_argument(
-        "-n",
-        "--nickname",
-        help="assign a nickname to the device",
-        nargs=1,
-        dest="nickname",
-    )
-    parser_device_add.add_argument(
-        "-d",
-        "--description",
-        help="give a description to the device",
-        nargs=1,
-        dest="description",
+        "name",
+        type=str,
+        nargs="+",
+        help="the name of the device to add as it appears in ~/.ssh/config",
     )
     parser_device_add.set_defaults(func=device_add)
+
+    # parser for the "device rm" command
+    parser_device_rm = device_subparsers.add_parser(
+        "rm", help="remove devices from the known device list"
+    )
+    parser_device_rm.add_argument(
+        "name",
+        type=str,
+        nargs="+",
+        help="one or more device names to remove",
+    )
+    parser_device_rm.set_defaults(func=device_rm)
+
+    # parser for the "device setup" command
+    parser_device_setup = device_subparsers.add_parser(
+        "setup", help="setup known devices for experiments"
+    )
+    parser_device_setup.add_argument(
+        "-a",
+        "--all",
+        action="store_true",
+        dest="all",
+        help="run the sequence on all known devices",
+    )
+    parser_device_setup.add_argument(
+        "-v",
+        "--validate",
+        action="store_true",
+        dest="validate",
+        help="validate the device setup",
+    )
+    parser_device_setup.add_argument(
+        "name",
+        nargs="*",
+        help="one or more known device names to setup, or none if -a is used",
+    )
+    parser_device_setup.set_defaults(func=device_setup)
 
     # Parser for "experiment"
     parser_experiment = subparsers.add_parser(
@@ -633,15 +648,15 @@ def main(session: Session):
 
     args = parser.parse_args()
     if "func" in args:
+        # Start the session
+        global session
+        session = Session()
+        session.log("debug", "tracr CLI run as main. Logging setup complete.")
+        # Run the function specified by the subparser
         args.func(args)
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
-    # Start the session
-    session = Session()
-    session.log("debug", "tracr CLI run as main. Logging setup complete.")
-
-    # Run the main function
-    main(session)
+    main()

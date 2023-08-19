@@ -72,7 +72,7 @@ if $DEBUG; then
     # Run the tracr application with the given arguments, but with the code
     # mounted as a volume so that changes to the code are reflected in the
     # container without rebuilding.
-    docker run --rm -it --name tracr-db-runtime -v "$DIR:/RACR_AI" tracr-db "$@"
+    docker run --rm -it --name tracr-db-runtime -v "$DIR:/RACR_AI" -v "$HOME/.ssh/:/host_ssh" tracr-db "$@"
 
 else
 
@@ -84,7 +84,7 @@ else
 
     # Run the tracr application with the given arguments, in this case only
     # mounting the PersistentData directory as a volume
-    docker run --rm -it --name tracr-runtime -v "$DIR/PersistentData:/RACR_AI/PersistentData" tracr "$@"
+    docker run --rm -it --name tracr-runtime -v "$DIR/PersistentData:/RACR_AI/PersistentData" -v "$HOME/.ssh/:/host_ssh" tracr "$@"
 
 fi
 

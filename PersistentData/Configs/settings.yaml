@@ -1,0 +1,7 @@
+Preferences:
+  verbosity: 3
+Known_Devices:
+- home-pi-tracr
+- tracr-pi3-1
+- tracr-pi3-2
+- tracr-pi3-3

@@ -7,7 +7,6 @@ import paramiko
 import ipaddress
 import json
 import platform
-import docker
 import concurrent.futures
 import netifaces as ni
 from getmac import get_mac_address

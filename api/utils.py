@@ -1,9 +1,19 @@
 import pathlib
+import threading
+import ipaddress
+import logging
+import socket
 import time
 import subprocess
 from rich.table import Column
 from rich.progress import Progress, BarColumn, TextColumn
 from rich.progress import Progress
+
+
+REPO_NAME = "RACR_AI"
+
+
+logger = logging.getLogger("tracr_logger")
 
 
 def get_tracr_root() -> pathlib.Path:
@@ -12,12 +22,50 @@ def get_tracr_root() -> pathlib.Path:
     Does not matter where this function is called from, as long as it is
     called from within the TRACR project directory (which should be the case)
     """
-    result = pathlib.Path(__file__).parent
-    repeats = 0
-    while result.name != "RACR_AI" and repeats < 5:
-        result = result.parent
-        repeats += 1
-    return result
+    result = pathlib.Path(__file__).parent.absolute()
+    logger.debug(f"get_tracr_root() starting search from {result}")
+    parts = str(result).split("/")
+    parts = parts[1:]
+    parts[0] = "/" + parts[0]
+    logger.debug(f"get_tracr_root() parts: {parts}")
+    try:
+        parts = parts[: parts.index(REPO_NAME) + 1]
+    except ValueError:
+        name = "/" + REPO_NAME
+        parts = parts[: parts.index(name) + 1]
+
+    return pathlib.Path("/".join(parts))
+
+
+def threaded_scan(cidr_block="192.168.1.0/24", port=22, ttl=0.5):
+    """
+    Searches the network for devices listening on the specified port.
+    """
+
+    def scan_ip(ip, results):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(ttl)
+        result = sock.connect_ex((ip, port))
+        if result == 0:
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+            except socket.herror:
+                hostname = None
+            results.append((ip, hostname))
+        sock.close()
+
+    ips = ipaddress.ip_network(cidr_block).hosts()
+
+    threads = []
+    results = []
+    for ip in ips:
+        t = threading.Thread(target=scan_ip, args=(str(ip), results))
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+
+    return results
 
 
 def get_text(textfile: pathlib.Path) -> str:

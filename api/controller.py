@@ -1,6 +1,7 @@
 import http.server
 import socketserver
 import oyaml
+import logging
 import json
 import os
 import sys
@@ -8,6 +9,9 @@ from pathlib import Path
 
 import api.utils as utils
 import api.bash_script_wrappers as bashw
+
+
+logger = logging.getLogger("tracr_logger")
 
 
 def serve_files_over_http(directory: Path, port: int = 8000):
@@ -59,25 +63,35 @@ class Controller:
     data about the experiment.
     """
 
-    tracr_directory: Path = Path("~/.tracr/").expanduser()
+    tracr_root: Path = utils.get_tracr_root()
+    settings_fp: Path = tracr_root / "PersistentData" / "Configs" / "settings.yaml"
+    data: dict
 
     def __init__(self):
-        pass
+        if not self.settings_fp.exists():
+            raise FileNotFoundError("No settings file found.")
+        else:
+            self._read_settings()
+            logger.info("Settings file found.")
+
+    def _read_settings(self):
+        """
+        Internal function used to read the settings file to memory.
+        """
+        with open(self.settings_fp, "r") as f:
+            self.data = oyaml.safe_load(f)
 
     def get_settings(self, category: str = None):
         """
         Returns the settings for the specified category. If no category is
         specified, returns all settings.
         """
-        settings_fp = self.tracr_directory / "configs" / "settings.yaml"
-        if not settings_fp.exists():
-            raise FileNotFoundError(
-                "No settings file found. Use the bootstrap script to set up tracr."
-            )
-        with open(settings_fp, "r") as f:
+        if not self.settings_fp.exists():
+            raise FileNotFoundError("No settings file found.")
+        with open(self.settings_fp, "r") as f:
             settings = oyaml.safe_load(f)
         if category:
-            return settings.get(category)
+            return settings[category]
         else:
             return settings
 
